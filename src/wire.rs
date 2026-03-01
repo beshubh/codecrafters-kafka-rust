@@ -1,11 +1,13 @@
 
 
+#[derive(Debug, Clone)]
 pub struct ReqHeader {
     pub request_api_key: i16,
     pub request_api_version: i16,
     pub correlation_id: i32,
     // pub client_id: String,
     // pub tag_buffer: Vec<u8>,
+    //
 }
 
 impl ReqHeader {
@@ -44,9 +46,12 @@ impl ReqHeader {
     }
 }
 
+// pub struct ReqBody {}
+#[derive(Debug, Clone)]
 pub struct ReqMessage {
     pub message_size: u32,
     pub header: ReqHeader,
+    // pub body: ReqBody,
 }
 
 impl ReqMessage {
@@ -69,12 +74,10 @@ impl ReqMessage {
     }
 }
 
-
+#[derive(Debug, Clone)]
 pub struct ResHeader {
     pub correlation_id: i32
 }
-
-
 
 impl ResHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -91,9 +94,37 @@ impl ResHeader {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ResBody {
+    pub error_code: i16,
+}
+
+impl Default for ResBody {
+    fn default() -> Self {
+        Self { error_code: 0 }
+    }
+}
+
+impl ResBody {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&self.error_code.to_be_bytes());
+        buf
+    }
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let mut error_code_bytes: [u8; 2] = [0; 2];
+        error_code_bytes.copy_from_slice(&bytes[0..2]);
+        Self {
+            error_code: i16::from_be_bytes(error_code_bytes),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ResMessage {
     pub message_size: u32,
     pub header: ResHeader,
+    pub body: ResBody,
 }
 
 impl ResMessage {
@@ -101,14 +132,17 @@ impl ResMessage {
         let mut buf: Vec<u8> = Vec::new();
         buf.extend_from_slice(&self.message_size.to_be_bytes());
         buf.extend_from_slice(&&self.header.to_bytes());
+        buf.extend_from_slice(&&self.body.to_bytes());
         buf
     }
+
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let message_size_bytes: [u8; 4] = [0; 4];
         let header = ResHeader::from_bytes(&bytes[4..]);
         Self {
             message_size: u32::from_be_bytes(message_size_bytes),
             header: header,
+            body: ResBody { error_code: 0 }
         }
     }
 }

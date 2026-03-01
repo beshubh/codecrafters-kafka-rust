@@ -5,8 +5,9 @@ use std::{
 };
 
 mod wire;
+mod apis;
 
-use crate::wire::{ReqMessage, ReqHeader, ResMessage, ResHeader};
+use crate::{apis::{ApiHandler, ApiVersionsHandler}, wire::{ReqHeader, ReqMessage, ResBody, ResHeader, ResMessage}};
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -37,11 +38,18 @@ fn handle_client(mut stream: TcpStream) {
         = stream.read(&mut buf).unwrap();
     let request = ReqMessage::from_bytes(&buf);
 
-    let message = ResMessage{
-        message_size: request.message_size,
-        header: ResHeader {
-            correlation_id: request.header.correlation_id,
-        },
+    println!("request api verions: {:?}", request.header.request_api_version);
+    let response = match request.header.request_api_key {
+        apis::API_VERSION => ApiVersionsHandler::new(request).handle(),
+        _ => {
+            ResMessage {
+                message_size: request.message_size,
+                header: ResHeader {
+                    correlation_id: request.header.correlation_id,
+                },
+                body: ResBody::default()
+            }
+        }
     };
-    stream.write_all(&message.to_bytes()).unwrap();
+    stream.write_all(&response.to_bytes()).unwrap();
 }
