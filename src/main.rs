@@ -6,7 +6,7 @@ use std::{
 
 mod wire;
 
-use crate::wire::Message;
+use crate::wire::{ReqMessage, ReqHeader, ResMessage, ResHeader};
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -26,10 +26,22 @@ fn main() {
     }
 }
 
+fn serialize(buf: &[u8]) -> ReqMessage {
+    let message = ReqMessage::from_bytes(buf);
+    message
+}
+
 fn handle_client(mut stream: TcpStream) {
-    let message = Message{
-        message_size: 2,
-        header: 7,
+    let mut buf  = [0u8; 1024];
+    let _
+        = stream.read(&mut buf).unwrap();
+    let request = ReqMessage::from_bytes(&buf);
+
+    let message = ResMessage{
+        message_size: request.message_size,
+        header: ResHeader {
+            correlation_id: request.header.correlation_id,
+        },
     };
     stream.write_all(&message.to_bytes()).unwrap();
 }
