@@ -1,13 +1,15 @@
 #![allow(unused_imports)]
 use std::{
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
 };
 
-mod wire;
 mod apis;
+mod router;
+mod wire;
 
-use crate::{apis::{ApiHandler, ApiVersionsHandler}, wire::{ReqHeader, ReqMessage, ResBody, ResHeader, ResMessage}};
+use router::{handle_request, RequestContext};
+use wire::{Decode, ReqMessage};
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -27,29 +29,12 @@ fn main() {
     }
 }
 
-fn serialize(buf: &[u8]) -> ReqMessage {
-    let message = ReqMessage::from_bytes(buf);
-    message
-}
-
 fn handle_client(mut stream: TcpStream) {
-    let mut buf  = [0u8; 1024];
-    let _
-        = stream.read(&mut buf).unwrap();
-    let request = ReqMessage::from_bytes(&buf);
+    let mut buf = [0u8; 1024];
+    let n = stream.read(&mut buf).unwrap();
+    let mut cur = Cursor::new(&buf[..n]);
+    let request = ReqMessage::decode(&mut cur).unwrap();
 
-    println!("request api verions: {:?}", request.header.request_api_version);
-    let response = match request.header.request_api_key {
-        apis::API_VERSION => ApiVersionsHandler::new(request).handle(),
-        _ => {
-            ResMessage {
-                message_size: request.message_size,
-                header: ResHeader {
-                    correlation_id: request.header.correlation_id,
-                },
-                body: ResBody::default()
-            }
-        }
-    };
-    stream.write_all(&response.to_bytes()).unwrap();
+    let response = handle_request(RequestContext::from(request));
+    stream.write_all(&response.to_bytes().unwrap()).unwrap();
 }

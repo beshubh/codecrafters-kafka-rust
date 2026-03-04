@@ -1,148 +1,192 @@
+use std::io::Cursor;
 
+use crate::apis::{BodyDecoder, BodyEncoder, ReqBody, ResBody};
+use bytes::Buf;
+
+pub trait Decode: Sized {
+    fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError>;
+}
+pub trait DecodeVersioned: Sized {
+    fn decode_versioned(cur: &mut Cursor<&[u8]>, version: i16) -> Result<Self, DecodeError>;
+}
+
+pub trait Encode {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError>;
+}
+
+#[derive(Debug)]
+pub enum DecodeError {
+    Truncated,
+    InvalidUtf8,
+    InvalidLength,
+    UnknownApiKey(i16),
+}
+
+#[derive(Debug)]
+pub enum EncodeError {
+    UnknownApiKey(i16),
+}
+
+fn read_string(cur: &mut Cursor<&[u8]>) -> Result<String, DecodeError> {
+    if cur.remaining() < 2 {
+        return Err(DecodeError::Truncated);
+    }
+    let len = cur.get_u16();
+    let n = len as usize;
+    if cur.remaining() < n {
+        return Err(DecodeError::Truncated);
+    }
+    let mut buf = vec![0u8; n];
+    cur.copy_to_slice(&mut buf);
+    String::from_utf8(buf).map_err(|_| DecodeError::InvalidUtf8)
+}
+
+#[derive(Debug, Clone)]
+pub struct HClientId(pub String);
+
+impl Decode for HClientId {
+    fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
+        if cur.remaining() < 2 {
+            return Err(DecodeError::Truncated);
+        }
+
+        // Kafka STRING length is INT16; -1 => null
+        let len = cur.get_i16(); // requires Buf::get_i16()
+        if len == -1 {
+            return Ok(Self(String::new())); // or return Err / or use Option<String>
+        }
+        if len < 0 {
+            return Err(DecodeError::InvalidLength);
+        }
+
+        let len_usize = len as usize;
+        if cur.remaining() < len_usize {
+            return Err(DecodeError::Truncated);
+        }
+
+        let mut content_bytes = vec![0u8; len_usize];
+        cur.copy_to_slice(&mut content_bytes);
+
+        let contents = String::from_utf8(content_bytes).map_err(|_| DecodeError::InvalidUtf8)?;
+
+        Ok(Self(contents))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TagBuffer; // placeholder until you implement parsing
+
+impl Decode for TagBuffer {
+    fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
+        if cur.remaining() < 1 {
+            return Err(DecodeError::Truncated);
+        }
+        let len = cur.get_i8();
+        if len < 0 {
+            return Err(DecodeError::Truncated); // or InvalidLength
+        }
+        let n = len as usize;
+        if cur.remaining() < n {
+            return Err(DecodeError::Truncated);
+        }
+        cur.advance(n); // consumes the tag bytes
+        Ok(Self)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ReqHeader {
     pub request_api_key: i16,
     pub request_api_version: i16,
     pub correlation_id: i32,
-    // pub client_id: String,
-    // pub tag_buffer: Vec<u8>,
-    //
+    pub client_id: HClientId,
+    pub tag_buffer: TagBuffer,
 }
 
-impl ReqHeader {
-    // TODO: add variable length and string support
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::new();
-        buf.extend_from_slice(&self.request_api_key.to_be_bytes());
-        buf.extend_from_slice(&self.request_api_version.to_be_bytes());
-        buf.extend_from_slice(&self.correlation_id.to_be_bytes());
-        // buf.extend_from_slice(self.client_id.as_bytes());
-        // buf.extend_from_slice(&self.tag_buffer);
-        buf
-    }
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut request_api_key_bytes: [u8; 2] = [0; 2];
-        let mut request_api_version_bytes: [u8; 2] = [0; 2];
-
-        let mut correlation_id_bytes: [u8; 4] = [0; 4];
-
-        // let mut client_id_bytes: [u8; 64] = [0; 64];
-        // let mut tag_buffer_bytes: [u8; 64] = [0; 64];
-
-        request_api_key_bytes.copy_from_slice(&bytes[0..2]);
-        request_api_version_bytes.copy_from_slice(&bytes[2..4]);
-        correlation_id_bytes.copy_from_slice(&bytes[4..8]);
-        // client_id_bytes.copy_from_slice(&bytes[8..72]);
-        // tag_buffer_bytes.copy_from_slice(&bytes[72..]);
-
-        Self {
-            request_api_key: i16::from_be_bytes(request_api_key_bytes),
-            request_api_version: i16::from_be_bytes(request_api_version_bytes),
-            correlation_id: i32::from_be_bytes(correlation_id_bytes),
-            // client_id: String::from_utf8(client_id_bytes.to_vec()).unwrap(),
-            // tag_buffer: tag_buffer_bytes.to_vec(),
+impl Decode for ReqHeader {
+    fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
+        // request_api_key (i16) + request_api_version (i16) + correlation_id (i32) = 8 bytes
+        if cur.remaining() < 8 {
+            return Err(DecodeError::Truncated);
         }
+        let request_api_key = cur.get_i16();
+        // Optional: validate key
+        // match request_api_key {
+        //     1 | 2 | 3 => {} // allowed keys
+        //     other => return Err(DecodeError::UnknownApiKey(other)),
+        // }
+
+        let request_api_version = cur.get_i16();
+        let correlation_id = cur.get_i32();
+        // These consume bytes from the same cursor, in-order.
+        let client_id = HClientId::decode(cur)?;
+        let tag_buffer = TagBuffer::decode(cur)?;
+
+        Ok(Self {
+            request_api_key,
+            request_api_version,
+            correlation_id,
+            client_id,
+            tag_buffer,
+        })
     }
 }
 
-// pub struct ReqBody {}
 #[derive(Debug, Clone)]
 pub struct ReqMessage {
     pub message_size: u32,
     pub header: ReqHeader,
-    // pub body: ReqBody,
+    pub body: ReqBody,
 }
 
-impl ReqMessage {
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::new();
-        buf.extend_from_slice(&self.message_size.to_be_bytes());
-        buf.extend_from_slice(&&self.header.to_bytes());
-        buf
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut message_size_bytes: [u8; 4] = [0; 4];
-        let header = ReqHeader::from_bytes(&bytes[4..]);
-        message_size_bytes.copy_from_slice(&bytes[0..4]);
-        Self {
-            message_size: u32::from_be_bytes(message_size_bytes),
-            header: header,
-        }
+impl Decode for ReqMessage {
+    fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
+        let message_size = cur.get_u32();
+        let header = ReqHeader::decode(cur)?;
+        let body = ReqBody::decode(cur, header.request_api_key)?;
+        Ok(Self {
+            message_size,
+            header,
+            body,
+        })
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ResHeader {
-    pub correlation_id: i32
+    pub correlation_id: i32,
 }
 
-impl ResHeader {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::new();
-        buf.extend_from_slice(&self.correlation_id.to_be_bytes());
-        buf
-    }
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut correlation_id_bytes: [u8; 4] = [0; 4];
-        correlation_id_bytes.copy_from_slice(&bytes[0..4]);
-        Self {
-            correlation_id: i32::from_be_bytes(correlation_id_bytes),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ResBody {
-    pub error_code: i16,
-}
-
-impl Default for ResBody {
-    fn default() -> Self {
-        Self { error_code: 0 }
-    }
-}
-
-impl ResBody {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::new();
-        buf.extend_from_slice(&self.error_code.to_be_bytes());
-        buf
-    }
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut error_code_bytes: [u8; 2] = [0; 2];
-        error_code_bytes.copy_from_slice(&bytes[0..2]);
-        Self {
-            error_code: i16::from_be_bytes(error_code_bytes),
-        }
+impl Encode for ResHeader {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        out.extend_from_slice(&self.correlation_id.to_be_bytes());
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ResMessage {
-    pub message_size: u32,
+    pub api_key: i16,
     pub header: ResHeader,
     pub body: ResBody,
 }
 
-impl ResMessage {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::new();
-        buf.extend_from_slice(&self.message_size.to_be_bytes());
-        buf.extend_from_slice(&&self.header.to_bytes());
-        buf.extend_from_slice(&&self.body.to_bytes());
-        buf
-    }
+impl Encode for ResMessage {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let mut payload = Vec::new();
+        self.header.encode(&mut payload)?;
+        self.body.encode(&mut payload, self.api_key)?;
 
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let message_size_bytes: [u8; 4] = [0; 4];
-        let header = ResHeader::from_bytes(&bytes[4..]);
-        Self {
-            message_size: u32::from_be_bytes(message_size_bytes),
-            header: header,
-            body: ResBody { error_code: 0 }
-        }
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(&payload);
+        Ok(())
+    }
+}
+
+impl ResMessage {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let mut out = Vec::new();
+        self.encode(&mut out)?;
+        Ok(out)
     }
 }
