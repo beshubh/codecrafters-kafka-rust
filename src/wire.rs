@@ -3,8 +3,8 @@ use std::io::Cursor;
 use crate::apis::{self, BodyDecoder, BodyEncoder, ReqBody, ResBody};
 use bytes::Buf;
 
-// Re-export so all existing `use crate::wire::DecodeError` imports keep working.
-pub use crate::binary::DecodeError;
+// Re-export so all existing import paths keep working.
+pub use crate::binary::{DecodeError, TagBuffer};
 
 pub trait Decode: Sized {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError>;
@@ -64,27 +64,6 @@ impl Decode for HClientId {
         let contents = String::from_utf8(content_bytes).map_err(|_| DecodeError::InvalidUtf8)?;
 
         Ok(Self(contents))
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TagBuffer; // placeholder until you implement parsing
-
-impl Decode for TagBuffer {
-    fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        if cur.remaining() < 1 {
-            return Err(DecodeError::Truncated);
-        }
-        let len = cur.get_i8();
-        if len < 0 {
-            return Err(DecodeError::Truncated); // or InvalidLength
-        }
-        let n = len as usize;
-        if cur.remaining() < n {
-            return Err(DecodeError::Truncated);
-        }
-        cur.advance(n); // consumes the tag bytes
-        Ok(Self)
     }
 }
 
@@ -167,7 +146,7 @@ pub struct ResHeaderV1 {
 impl Encode for ResHeaderV1 {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
         out.extend_from_slice(&self.correlation_id.to_be_bytes());
-        self.tag_buffer.encode(out)?;
+        self.tag_buffer.encode(out);
         Ok(())
     }
 }
@@ -197,13 +176,6 @@ impl Encode for ResHeader {
             Self::V0(header) => header.encode(out),
             Self::V1(header) => header.encode(out),
         }
-    }
-}
-
-impl Encode for TagBuffer {
-    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
-        out.push(0);
-        Ok(())
     }
 }
 

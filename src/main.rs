@@ -9,11 +9,11 @@ use tracing_subscriber::EnvFilter;
 
 mod apis;
 mod binary;
+mod kraft;
 mod router;
-mod storage;
 mod wire;
 
-use router::{handle_request, RequestContext};
+use router::{RequestContext, handle_request};
 use wire::{Decode, ReqMessage};
 
 fn main() -> Result<()> {

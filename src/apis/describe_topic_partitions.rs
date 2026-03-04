@@ -5,7 +5,7 @@ use crate::apis::{
     self, TagBuffer, decode_compact_string, encode_bool, encode_compact_string,
     encode_empty_tag_buffer, encode_uuid, read_uvarint, write_uvarint,
 };
-use crate::storage;
+use crate::kraft;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 use tracing::{error, trace};
 
@@ -165,12 +165,12 @@ impl Encode for DescribeTopicsResponse {
 }
 
 pub fn handle(request: &DescribeTopicsRequest, _api_version: i16) -> DescribeTopicsResponse {
-    use crate::storage::RecordValue;
+    use crate::kraft::RecordValue;
     use std::collections::HashMap;
 
     let mut topics_out = Vec::new();
 
-    let batches = match storage::load_metadata_image() {
+    let batches = match kraft::load_metadata_image() {
         Ok(b) => b,
         Err(err) => {
             error!(error = ?err, "failed to load metadata image");
@@ -187,7 +187,7 @@ pub fn handle(request: &DescribeTopicsRequest, _api_version: i16) -> DescribeTop
     // topic_id -> topic name
     let mut topic_names: HashMap<[u8; 16], String> = HashMap::new();
     // topic_id -> list of partitions
-    let mut partitions_by_topic: HashMap<[u8; 16], Vec<storage::Partition>> = HashMap::new();
+    let mut partitions_by_topic: HashMap<[u8; 16], Vec<kraft::Partition>> = HashMap::new();
 
     for batch in &batches {
         for record in &batch.records {

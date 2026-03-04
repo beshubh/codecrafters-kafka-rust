@@ -140,3 +140,35 @@ pub fn read_tagged_fields(cur: &mut Cursor<&[u8]>) -> Result<TaggedFields, Decod
     }
     Ok(fields)
 }
+
+// ── TagBuffer (wire-level) ────────────────────────────────────────────────────
+
+/// A Kafka *flexible version* tag buffer on the wire.
+///
+/// In the current implementation this is a skip-only placeholder:
+/// decoding reads and discards any tagged fields; encoding writes a
+/// single `0x00` byte ("zero tagged fields").
+#[derive(Debug, Clone, Default)]
+pub struct TagBuffer;
+
+impl TagBuffer {
+    /// Decode a tag buffer from the cursor, skipping all fields.
+    pub fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
+        // The count is a uvarint; skip each field's tag + size + data.
+        let count = read_uvarint(cur)? as usize;
+        for _ in 0..count {
+            let _tag = read_uvarint(cur)?;
+            let size = read_uvarint(cur)? as usize;
+            if cur.remaining() < size {
+                return Err(DecodeError::Truncated);
+            }
+            cur.advance(size);
+        }
+        Ok(TagBuffer)
+    }
+
+    /// Encode an empty tag buffer (single zero byte).
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(0);
+    }
+}

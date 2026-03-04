@@ -15,7 +15,7 @@ pub fn encode_empty_tag_buffer(out: &mut Vec<u8>) {
 }
 
 pub fn decode_compact_string(cur: &mut Cursor<&[u8]>) -> Result<String, DecodeError> {
-    let len_plus_one = read_uvarint(cur).unwrap() as i64;
+    let len_plus_one = read_uvarint(cur)? as i64;
 
     // For COMPACT_STRING (non-nullable), 0 is invalid.
     if len_plus_one == 0 {
@@ -46,26 +46,7 @@ pub fn encode_uuid(out: &mut Vec<u8>, value: &[u8; 16]) {
     out.extend_from_slice(value);
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct TagBuffer; // placeholder until you implement parsing
-
-impl Decode for TagBuffer {
-    fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        if cur.remaining() < 1 {
-            return Err(DecodeError::Truncated);
-        }
-        let len = cur.get_i8();
-        if len < 0 {
-            return Err(DecodeError::Truncated); // or InvalidLength
-        }
-        let n = len as usize;
-        if cur.remaining() < n {
-            return Err(DecodeError::Truncated);
-        }
-        cur.advance(n); // consumes the tag bytes
-        Ok(Self)
-    }
-}
+pub use crate::binary::TagBuffer;
 
 pub const API_VERSION: i16 = 18;
 pub const DESCRIBE_TOPIC_PARTITIONS: i16 = 75;
