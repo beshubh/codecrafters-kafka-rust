@@ -147,14 +147,23 @@ pub fn handle(_request: &ApiVersionsRequest, api_version: i16) -> ApiVersionsRes
         };
     }
 
-    ApiVersionsResponse {
-        error_code: 0,
-        api_keys: vec![ApiKey {
+    let support_apis = vec![
+        ApiKey {
             api_key: 18,
             min_version: 0,
             max_version: 4,
             tag_buffer: (),
-        }],
+        },
+        ApiKey {
+            api_key: 75,
+            min_version: 0,
+            max_version: 0,
+            tag_buffer: (),
+        },
+    ];
+    ApiVersionsResponse {
+        error_code: 0,
+        api_keys: support_apis,
         throttle_time_ms: 0,
         tag_buffer: (),
     }
