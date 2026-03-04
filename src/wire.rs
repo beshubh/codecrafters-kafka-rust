@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use crate::apis::{BodyDecoder, BodyEncoder, ReqBody, ResBody};
+use crate::apis::{self, BodyDecoder, BodyEncoder, ReqBody, ResBody};
 use bytes::Buf;
 
 pub trait Decode: Sized {
@@ -153,11 +153,11 @@ impl Decode for ReqMessage {
 }
 
 #[derive(Debug, Clone)]
-pub struct ResHeader {
+pub struct ResHeaderV0 {
     pub correlation_id: i32,
 }
 
-impl Encode for ResHeader {
+impl Encode for ResHeaderV0 {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
         out.extend_from_slice(&self.correlation_id.to_be_bytes());
         Ok(())
@@ -165,8 +165,57 @@ impl Encode for ResHeader {
 }
 
 #[derive(Debug, Clone)]
+pub struct ResHeaderV1 {
+    pub correlation_id: i32,
+    pub tag_buffer: TagBuffer,
+}
+
+impl Encode for ResHeaderV1 {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        out.extend_from_slice(&self.correlation_id.to_be_bytes());
+        self.tag_buffer.encode(out)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ResHeader {
+    V0(ResHeaderV0),
+    V1(ResHeaderV1),
+}
+
+impl ResHeader {
+    pub fn v0(correlation_id: i32) -> Self {
+        Self::V0(ResHeaderV0 { correlation_id })
+    }
+
+    pub fn v1(correlation_id: i32, tag_buffer: TagBuffer) -> Self {
+        Self::V1(ResHeaderV1 {
+            correlation_id,
+            tag_buffer,
+        })
+    }
+}
+
+impl Encode for ResHeader {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        match self {
+            Self::V0(header) => header.encode(out),
+            Self::V1(header) => header.encode(out),
+        }
+    }
+}
+
+impl Encode for TagBuffer {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        out.push(0);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ResMessage {
-    pub api_key: i16,
+    // pub api_key: i16,
     pub header: ResHeader,
     pub body: ResBody,
 }
@@ -175,9 +224,8 @@ impl Encode for ResMessage {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
         let mut payload = Vec::new();
         self.header.encode(&mut payload)?;
-        self.body.encode(&mut payload, self.api_key)?;
-
-        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        self.body.encode(&mut payload)?;
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes()); // message size
         out.extend_from_slice(&payload);
         Ok(())
     }

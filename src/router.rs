@@ -1,5 +1,5 @@
 use crate::apis::{self, ReqBody, ResBody};
-use crate::wire::{ReqMessage, ResHeader, ResMessage};
+use crate::wire::{self, ReqMessage, ResHeader, ResMessage};
 
 #[derive(Debug, Clone)]
 pub struct RequestContext {
@@ -21,18 +21,25 @@ impl From<ReqMessage> for RequestContext {
 }
 
 pub fn handle_request(ctx: RequestContext) -> ResMessage {
-    let body = match &ctx.body {
+    match &ctx.body {
         ReqBody::ApiVersions(request) => {
             let response = apis::api_versions::handle(request, ctx.api_version);
-            ResBody::ApiVersions(response)
+            let body = ResBody::ApiVersions(response);
+            ResMessage {
+                header: ResHeader::v0(ctx.correlation_id),
+                body,
+            }
         }
-    };
-
-    ResMessage {
-        api_key: ctx.api_key,
-        header: ResHeader {
-            correlation_id: ctx.correlation_id,
-        },
-        body,
+        ReqBody::DescribeTopics(request) => {
+            let response = apis::describe_topic_partitions::handle(&request, ctx.api_version);
+            let body = ResBody::DescribeTopics(response);
+            ResMessage {
+                header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
+                body,
+            }
+        }
+        _ =>  {
+            unimplemented!()
+        }
     }
 }

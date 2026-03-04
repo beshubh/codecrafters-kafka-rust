@@ -1,53 +1,15 @@
 use bytes::Buf;
 use std::io::Cursor;
 
-use crate::apis::TagBuffer;
+use crate::apis::{
+    decode_compact_string, encode_empty_tag_buffer, read_uvarint, write_uvarint, TagBuffer,
+};
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 
 #[derive(Debug, Clone)]
 pub struct ClientSoftwareName(pub String);
 #[derive(Debug, Clone)]
 pub struct ClientSoftwareVersion(pub String);
-
-fn read_uvarint(cur: &mut Cursor<&[u8]>) -> Result<u32, DecodeError> {
-    let mut value: u32 = 0;
-    let mut shift = 0;
-
-    loop {
-        if cur.remaining() < 1 {
-            return Err(DecodeError::Truncated);
-        }
-        let byte = cur.get_u8();
-        value |= ((byte & 0x7F) as u32) << shift;
-
-        if (byte & 0x80) == 0 {
-            return Ok(value);
-        }
-
-        shift += 7;
-        if shift > 28 {
-            return Err(DecodeError::InvalidLength); // varint too long
-        }
-    }
-}
-
-fn decode_compact_string(cur: &mut Cursor<&[u8]>) -> Result<String, DecodeError> {
-    let len_plus_one = read_uvarint(cur)? as i64;
-
-    // For COMPACT_STRING (non-nullable), 0 is invalid.
-    if len_plus_one == 0 {
-        return Err(DecodeError::InvalidLength);
-    }
-
-    let len = (len_plus_one - 1) as usize;
-    if cur.remaining() < len {
-        return Err(DecodeError::Truncated);
-    }
-
-    let mut buf = vec![0u8; len];
-    cur.copy_to_slice(&mut buf);
-    String::from_utf8(buf).map_err(|_| DecodeError::InvalidUtf8)
-}
 
 impl Decode for ClientSoftwareName {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
@@ -106,19 +68,6 @@ pub struct ApiVersionsResponse {
     pub api_keys: Vec<ApiKey>,
     pub throttle_time_ms: i32,
     pub tag_buffer: (),
-}
-
-// Kafka flexible "tag buffer": 0 means no tagged fields
-fn encode_empty_tag_buffer(out: &mut Vec<u8>) {
-    write_uvarint(out, 0);
-}
-
-fn write_uvarint(out: &mut Vec<u8>, mut v: u32) {
-    while v >= 0x80 {
-        out.push(((v as u8) & 0x7F) | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
 }
 
 impl Encode for ApiVersionsResponse {
