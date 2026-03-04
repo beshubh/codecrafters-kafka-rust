@@ -20,7 +20,9 @@ fn main() {
         match stream {
             Ok(stream) => {
                 println!("accepted new connection");
-                handle_client(stream);
+                std::thread::spawn(move || {
+                    handle_client(stream);
+                });
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -30,11 +32,18 @@ fn main() {
 }
 
 fn handle_client(mut stream: TcpStream) {
-    let mut buf = [0u8; 1024];
-    let n = stream.read(&mut buf).unwrap();
-    let mut cur = Cursor::new(&buf[..n]);
-    let request = ReqMessage::decode(&mut cur).unwrap();
+    loop {
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).unwrap();
 
-    let response = handle_request(RequestContext::from(request));
-    stream.write_all(&response.to_bytes().unwrap()).unwrap();
+        if n == 0 {
+            println!("client disconnected");
+            return;
+        }
+        let mut cur = Cursor::new(&buf[..n]);
+        let request = ReqMessage::decode(&mut cur).unwrap();
+
+        let response = handle_request(RequestContext::from(request));
+        stream.write_all(&response.to_bytes().unwrap()).unwrap();
+    }
 }
