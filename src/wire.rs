@@ -83,12 +83,6 @@ impl Decode for ReqHeader {
             return Err(DecodeError::Truncated);
         }
         let request_api_key = cur.get_i16();
-        // Optional: validate key
-        // match request_api_key {
-        //     1 | 2 | 3 => {} // allowed keys
-        //     other => return Err(DecodeError::UnknownApiKey(other)),
-        // }
-
         let request_api_version = cur.get_i16();
         let correlation_id = cur.get_i32();
         // These consume bytes from the same cursor, in-order.
@@ -115,6 +109,9 @@ pub struct ReqMessage {
 impl Decode for ReqMessage {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
         let message_size = cur.get_u32();
+        if cur.remaining() < message_size as usize {
+            return Err(DecodeError::Truncated);
+        }
         let header = ReqHeader::decode(cur)?;
         let body = ReqBody::decode(cur, header.request_api_key)?;
         Ok(Self {
