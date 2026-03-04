@@ -4,47 +4,18 @@ pub mod describe_topic_partitions;
 use api_versions::{ApiVersionsRequest, ApiVersionsResponse};
 use describe_topic_partitions::{DescribeTopicsRequest, DescribeTopicsResponse};
 
+use crate::binary::{read_uvarint, read_varint, write_uvarint};
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 use bytes::Buf;
 use std::io::Cursor;
-
-pub fn read_uvarint(cur: &mut Cursor<&[u8]>) -> Result<u32, DecodeError> {
-    let mut value: u32 = 0;
-    let mut shift = 0;
-
-    loop {
-        if cur.remaining() < 1 {
-            return Err(DecodeError::Truncated);
-        }
-        let byte = cur.get_u8();
-        value |= ((byte & 0x7F) as u32) << shift;
-
-        if (byte & 0x80) == 0 {
-            return Ok(value);
-        }
-
-        shift += 7;
-        if shift > 28 {
-            return Err(DecodeError::InvalidLength); // varint too long
-        }
-    }
-}
 
 // Kafka flexible "tag buffer": 0 means no tagged fields
 pub fn encode_empty_tag_buffer(out: &mut Vec<u8>) {
     write_uvarint(out, 0);
 }
 
-pub fn write_uvarint(out: &mut Vec<u8>, mut v: u32) {
-    while v >= 0x80 {
-        out.push(((v as u8) & 0x7F) | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
-
 pub fn decode_compact_string(cur: &mut Cursor<&[u8]>) -> Result<String, DecodeError> {
-    let len_plus_one = read_uvarint(cur)? as i64;
+    let len_plus_one = read_uvarint(cur).unwrap() as i64;
 
     // For COMPACT_STRING (non-nullable), 0 is invalid.
     if len_plus_one == 0 {

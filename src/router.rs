@@ -38,7 +38,7 @@ pub fn handle_request(ctx: RequestContext) -> ResMessage {
                 body,
             }
         }
-        _ =>  {
+        _ => {
             unimplemented!()
         }
     }
