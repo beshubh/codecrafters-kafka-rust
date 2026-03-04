@@ -269,6 +269,7 @@ pub fn handle(request: &DescribeTopicsRequest, _api_version: i16) -> DescribeTop
             });
         }
     }
+    topics_out.sort_by_key(|t| t.topic_name.clone());
 
     DescribeTopicsResponse {
         throttle_time_ms: 0,
