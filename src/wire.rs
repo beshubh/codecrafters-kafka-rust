@@ -3,23 +3,17 @@ use std::io::Cursor;
 use crate::apis::{self, BodyDecoder, BodyEncoder, ReqBody, ResBody};
 use bytes::Buf;
 
+// Re-export so all existing `use crate::wire::DecodeError` imports keep working.
+pub use crate::binary::DecodeError;
+
 pub trait Decode: Sized {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError>;
 }
 pub trait DecodeVersioned: Sized {
     fn decode_versioned(cur: &mut Cursor<&[u8]>, version: i16) -> Result<Self, DecodeError>;
 }
-
 pub trait Encode {
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError>;
-}
-
-#[derive(Debug)]
-pub enum DecodeError {
-    Truncated,
-    InvalidUtf8,
-    InvalidLength,
-    UnknownApiKey(i16),
 }
 
 #[derive(Debug)]
