@@ -2,7 +2,7 @@ use bytes::Buf;
 use std::io::Cursor;
 
 use crate::apis::{
-    decode_compact_string, encode_empty_tag_buffer, read_uvarint, write_uvarint, TagBuffer,
+    self, TagBuffer, decode_compact_string, encode_empty_tag_buffer, read_uvarint, write_uvarint,
 };
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 
@@ -98,15 +98,21 @@ pub fn handle(_request: &ApiVersionsRequest, api_version: i16) -> ApiVersionsRes
 
     let support_apis = vec![
         ApiKey {
-            api_key: 18,
+            api_key: apis::API_VERSION,
             min_version: 0,
             max_version: 4,
             tag_buffer: (),
         },
         ApiKey {
-            api_key: 75,
+            api_key: apis::DESCRIBE_TOPIC_PARTITIONS,
             min_version: 0,
             max_version: 0,
+            tag_buffer: (),
+        },
+        ApiKey {
+            api_key: apis::FETCH,
+            min_version: 0,
+            max_version: 16,
             tag_buffer: (),
         },
     ];

@@ -1,12 +1,12 @@
 pub mod api_versions;
 pub mod describe_topic_partitions;
-
-use api_versions::{ApiVersionsRequest, ApiVersionsResponse};
-use describe_topic_partitions::{DescribeTopicsRequest, DescribeTopicsResponse};
+pub mod fetch;
 
 use crate::binary::{read_uvarint, read_varint, write_uvarint};
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
+use api_versions::{ApiVersionsRequest, ApiVersionsResponse};
 use bytes::Buf;
+use describe_topic_partitions::{DescribeTopicsRequest, DescribeTopicsResponse};
 use std::io::Cursor;
 
 // Kafka flexible "tag buffer": 0 means no tagged fields
