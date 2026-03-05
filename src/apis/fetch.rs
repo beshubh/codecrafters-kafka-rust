@@ -1,4 +1,5 @@
 use bytes::Buf;
+use std::collections::HashSet;
 use std::io::Cursor;
 use tracing::info;
 
@@ -6,6 +7,10 @@ use crate::binary::{
     TagBuffer, read_compact_array_len, read_compact_string, read_uuid, write_uvarint,
 };
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
+
+// ── Error codes ───────────────────────────────────────────────────────────────
+
+const ERROR_UNKNOWN_TOPIC_ID: i16 = 100;
 
 // ── Request structs ───────────────────────────────────────────────────────────
 
@@ -27,18 +32,18 @@ pub struct FetchRequest {
 
 #[derive(Debug, Clone)]
 pub struct TopicFetchRequest {
-    topic_id: [u8; 16],
-    partitions: Vec<PartitionFetchRequest>,
+    pub topic_id: [u8; 16],
+    pub partitions: Vec<PartitionFetchRequest>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PartitionFetchRequest {
-    partition: i32,
-    current_leader_epoch: i32,
-    fetch_offset: i64,
-    last_fetched_epoch: i32,
-    log_start_offset: i64,
-    partition_max_bytes: i32,
+    pub partition: i32,
+    pub current_leader_epoch: i32,
+    pub fetch_offset: i64,
+    pub last_fetched_epoch: i32,
+    pub log_start_offset: i64,
+    pub partition_max_bytes: i32,
 }
 
 // ── Decode impls ──────────────────────────────────────────────────────────────
@@ -145,19 +150,83 @@ impl Decode for PartitionFetchRequest {
 
 // ── Response structs ──────────────────────────────────────────────────────────
 
+/// Per-partition response inside a topic response.
+///
+/// Fetch Response partition (v16):
+///   partition_index        => INT32
+///   error_code             => INT16
+///   high_watermark         => INT64
+///   last_stable_offset     => INT64
+///   log_start_offset       => INT64
+///   aborted_transactions   => COMPACT_ARRAY (null/empty = varint 0x01 for empty)
+///   preferred_read_replica => INT32  (-1 = none)
+///   records                => COMPACT_NULLABLE_BYTES (null = 0x00)
+///   TAG_BUFFER
 #[derive(Debug, Clone)]
-pub struct TopicFetchResponse {}
+pub struct PartitionFetchResponse {
+    partition_index: i32,
+    error_code: i16,
+    high_watermark: i64,
+    last_stable_offset: i64,
+    log_start_offset: i64,
+    preferred_read_replica: i32,
+    // aborted_transactions and records omitted for now (empty / null)
+}
 
-impl Encode for TopicFetchResponse {
-    fn encode(&self, _out: &mut Vec<u8>) -> Result<(), EncodeError> {
+impl Encode for PartitionFetchResponse {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        out.extend_from_slice(&self.partition_index.to_be_bytes());
+        out.extend_from_slice(&self.error_code.to_be_bytes());
+        out.extend_from_slice(&self.high_watermark.to_be_bytes());
+        out.extend_from_slice(&self.last_stable_offset.to_be_bytes());
+        out.extend_from_slice(&self.log_start_offset.to_be_bytes());
+        // aborted_transactions: empty COMPACT_ARRAY => varint 1 (N+1 where N=0)
+        write_uvarint(out, 1);
+        // preferred_read_replica
+        out.extend_from_slice(&self.preferred_read_replica.to_be_bytes());
+        // records: null COMPACT_NULLABLE_BYTES => varint 0
+        write_uvarint(out, 0);
+        // TAG_BUFFER
+        TagBuffer.encode(out);
         Ok(())
     }
 }
 
+/// Per-topic response inside the outer responses array.
+///
+/// Fetch Response topic (v16):
+///   topic_id   => UUID
+///   partitions => COMPACT_ARRAY of PartitionFetchResponse
+///   TAG_BUFFER
+#[derive(Debug, Clone)]
+pub struct TopicFetchResponse {
+    topic_id: [u8; 16],
+    partitions: Vec<PartitionFetchResponse>,
+}
+
+impl Encode for TopicFetchResponse {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        out.extend_from_slice(&self.topic_id);
+        // COMPACT_ARRAY length = N+1
+        write_uvarint(out, (self.partitions.len() + 1) as u32);
+        for p in &self.partitions {
+            p.encode(out)?;
+        }
+        TagBuffer.encode(out);
+        Ok(())
+    }
+}
+
+/// Top-level Fetch Response (v16):
+///   throttle_time_ms => INT32
+///   error_code       => INT16
+///   session_id       => INT32
+///   responses        => COMPACT_ARRAY of TopicFetchResponse
+///   TAG_BUFFER
 #[derive(Debug, Clone)]
 pub struct FetchResponse {
-    error_code: i16,
     throttle_time_ms: i32,
+    error_code: i16,
     session_id: i32,
     responses: Vec<TopicFetchResponse>,
     tag_buffer: TagBuffer,
@@ -183,11 +252,59 @@ impl Encode for FetchResponse {
 
 pub fn handle(request: &FetchRequest, _api_version: i16) -> FetchResponse {
     info!("FetchRequest: {:?}", request);
+
+    // Placeholder: no topics are known yet.
+    let existing_topics: HashSet<[u8; 16]> = HashSet::new();
+
+    let responses: Vec<TopicFetchResponse> = request
+        .topics
+        .iter()
+        .map(|topic| {
+            if existing_topics.contains(&topic.topic_id) {
+                // Topic exists — return real partition data (stubbed with 0s for now)
+                let partitions = topic
+                    .partitions
+                    .iter()
+                    .map(|p| PartitionFetchResponse {
+                        partition_index: p.partition,
+                        error_code: 0,
+                        high_watermark: 0,
+                        last_stable_offset: 0,
+                        log_start_offset: 0,
+                        preferred_read_replica: -1,
+                    })
+                    .collect();
+                TopicFetchResponse {
+                    topic_id: topic.topic_id,
+                    partitions,
+                }
+            } else {
+                // Topic not found — UNKNOWN_TOPIC_ID (100) on every requested partition
+                let partitions = topic
+                    .partitions
+                    .iter()
+                    .map(|p| PartitionFetchResponse {
+                        partition_index: p.partition,
+                        error_code: ERROR_UNKNOWN_TOPIC_ID,
+                        high_watermark: -1,
+                        last_stable_offset: -1,
+                        log_start_offset: -1,
+                        preferred_read_replica: -1,
+                    })
+                    .collect();
+                TopicFetchResponse {
+                    topic_id: topic.topic_id,
+                    partitions,
+                }
+            }
+        })
+        .collect();
+
     FetchResponse {
+        throttle_time_ms: 0,
         error_code: 0,
         session_id: request.session_id,
-        throttle_time_ms: 0,
-        responses: Vec::new(),
+        responses,
         tag_buffer: TagBuffer {},
     }
 }
