@@ -8,6 +8,7 @@ use api_versions::{ApiVersionsRequest, ApiVersionsResponse};
 use bytes::Buf;
 use describe_topic_partitions::{DescribeTopicsRequest, DescribeTopicsResponse};
 use std::io::Cursor;
+use fetch::{FetchRequest, FetchResponse};
 
 // Kafka flexible "tag buffer": 0 means no tagged fields
 pub fn encode_empty_tag_buffer(out: &mut Vec<u8>) {
@@ -61,6 +62,7 @@ pub const OFFSET_FETCH: i16 = 9;
 pub enum ReqBody {
     ApiVersions(ApiVersionsRequest),
     DescribeTopics(DescribeTopicsRequest),
+    Fetch(FetchRequest),
     // Metadata(MetadataRequest),
     // Produce(ProduceRequest),
     // Fetch(FetchRequest),
@@ -71,6 +73,7 @@ pub enum ReqBody {
 pub enum ResBody {
     ApiVersions(ApiVersionsResponse),
     DescribeTopics(DescribeTopicsResponse),
+    Fetch(FetchResponse),
     ErrorCode(i16),
 }
 
@@ -89,6 +92,7 @@ impl BodyDecoder for ReqBody {
             DESCRIBE_TOPIC_PARTITIONS => {
                 Ok(Self::DescribeTopics(DescribeTopicsRequest::decode(cur)?))
             }
+            FETCH => Ok(Self::Fetch(FetchRequest::decode(cur)?)),
             _ => Err(DecodeError::UnknownApiKey(api_key)),
         }
     }
@@ -99,6 +103,7 @@ impl BodyEncoder for ResBody {
         match self {
             Self::ApiVersions(response) => response.encode(out),
             Self::DescribeTopics(response) => response.encode(out),
+            Self::Fetch(response) => response.encode(out),
             Self::ErrorCode(error_code) => {
                 out.extend_from_slice(&error_code.to_be_bytes());
                 Ok(())

@@ -29,7 +29,7 @@ fn main() -> Result<()> {
                 debug!(peer = ?stream.peer_addr().ok(), "accepted new connection");
                 std::thread::spawn(move || {
                     if let Err(err) = handle_client(stream) {
-                        error!(error = ?err, "client handler failed");
+                        println!("client handler faield: {:#}", err);
                     }
                 });
             }

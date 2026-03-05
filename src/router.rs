@@ -38,6 +38,14 @@ pub fn handle_request(ctx: RequestContext) -> ResMessage {
                 body,
             }
         }
+        ReqBody::Fetch(request) => {
+            let response = apis::fetch::handle(&request, ctx.api_version);
+            let body = ResBody::Fetch(response);
+            ResMessage {
+                header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
+                body,
+            }
+        }
         _ => {
             unimplemented!()
         }

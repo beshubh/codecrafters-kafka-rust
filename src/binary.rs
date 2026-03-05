@@ -84,6 +84,36 @@ pub fn read_compact_string(cur: &mut Cursor<&[u8]>) -> Result<String, DecodeErro
     String::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)
 }
 
+/// Reads a Kafka *compact nullable string*
+pub fn read_compact_nullable_string(
+    cur: &mut Cursor<&[u8]>,
+) -> Result<Option<String>, DecodeError> {
+    let len_plus_one = read_uvarint(cur)?;
+    if len_plus_one == 0 {
+        return Ok(None);
+    }
+    let len = (len_plus_one - 1) as usize;
+    if cur.remaining() < len {
+        return Err(DecodeError::Truncated);
+    }
+    let mut bytes = vec![0u8; len];
+    cur.copy_to_slice(&mut bytes);
+    Ok(Some(
+        String::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)?,
+    ))
+}
+
+/// Reads a Kafka *compact array* length (uvarint − 1).
+/// Returns the number of elements, or `Err(InvalidLength)` for a null array (varint == 0).
+pub fn read_compact_array_len(cur: &mut Cursor<&[u8]>) -> Result<usize, DecodeError> {
+    let len_plus_one = read_uvarint(cur)?;
+    if len_plus_one == 0 {
+        // null array — treated as empty in flexible versions
+        return Ok(0);
+    }
+    Ok((len_plus_one - 1) as usize)
+}
+
 /// Reads a Kafka *compact array* of `i32` values.
 pub fn read_compact_array_i32(cur: &mut Cursor<&[u8]>) -> Result<Vec<i32>, DecodeError> {
     let len_plus_one = read_uvarint(cur)?;
