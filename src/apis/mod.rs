@@ -7,8 +7,8 @@ use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 use api_versions::{ApiVersionsRequest, ApiVersionsResponse};
 use bytes::Buf;
 use describe_topic_partitions::{DescribeTopicsRequest, DescribeTopicsResponse};
-use std::io::Cursor;
 use fetch::{FetchRequest, FetchResponse};
+use std::io::Cursor;
 
 // Kafka flexible "tag buffer": 0 means no tagged fields
 pub fn encode_empty_tag_buffer(out: &mut Vec<u8>) {

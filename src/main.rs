@@ -11,14 +11,19 @@ mod apis;
 mod binary;
 mod kraft;
 mod router;
+mod storage;
 mod wire;
 
 use router::{RequestContext, handle_request};
+use storage::ClusterMetadata;
 use wire::{Decode, ReqMessage};
 
 fn main() -> Result<()> {
     init_tracing();
     info!("starting kafka server");
+
+    let cluster_metadata =
+        ClusterMetadata::load_shared().context("failed to load cluster metadata")?;
 
     let listener = TcpListener::bind("127.0.0.1:9092")
         .context("failed to bind TCP listener on 127.0.0.1:9092")?;
@@ -27,8 +32,9 @@ fn main() -> Result<()> {
         match stream {
             Ok(stream) => {
                 debug!(peer = ?stream.peer_addr().ok(), "accepted new connection");
+                let cluster_metadata = cluster_metadata.clone();
                 std::thread::spawn(move || {
-                    if let Err(err) = handle_client(stream) {
+                    if let Err(err) = handle_client(stream, cluster_metadata) {
                         println!("client handler faield: {:#}", err);
                     }
                 });
@@ -42,7 +48,10 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_client(mut stream: TcpStream) -> Result<()> {
+fn handle_client(
+    mut stream: TcpStream,
+    cluster_metadata: storage::SharedClusterMetadata,
+) -> Result<()> {
     loop {
         let mut buf = [0u8; 1024];
         let n = stream
@@ -60,7 +69,10 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
         let request = ReqMessage::decode(&mut cur)
             .map_err(|err| anyhow::anyhow!("failed to decode request: {err:?}"))?;
 
-        let response = handle_request(RequestContext::from(request));
+        let response = handle_request(RequestContext::from_req_message(
+            request,
+            cluster_metadata.clone(),
+        ));
         let response_bytes = response
             .to_bytes()
             .map_err(|err| anyhow::anyhow!("failed to encode response: {err:?}"))?;

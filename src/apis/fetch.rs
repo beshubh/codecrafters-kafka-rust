@@ -1,11 +1,11 @@
 use bytes::Buf;
-use std::collections::HashSet;
 use std::io::Cursor;
 use tracing::info;
 
 use crate::binary::{
     TagBuffer, read_compact_array_len, read_compact_string, read_uuid, write_uvarint,
 };
+use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 
 // ── Error codes ───────────────────────────────────────────────────────────────
@@ -250,17 +250,19 @@ impl Encode for FetchResponse {
     }
 }
 
-pub fn handle(request: &FetchRequest, _api_version: i16) -> FetchResponse {
+pub fn handle(request: &FetchRequest, ctx: &RequestContext) -> FetchResponse {
     info!("FetchRequest: {:?}", request);
 
-    // Placeholder: no topics are known yet.
-    let existing_topics: HashSet<[u8; 16]> = HashSet::new();
+    let cluster_metadata = ctx
+        .cluster_metadata
+        .read()
+        .expect("cluster metadata lock poisoned");
 
     let responses: Vec<TopicFetchResponse> = request
         .topics
         .iter()
         .map(|topic| {
-            if existing_topics.contains(&topic.topic_id) {
+            if cluster_metadata.topics.contains_key(&topic.topic_id) {
                 // Topic exists — return real partition data (stubbed with 0s for now)
                 let partitions = topic
                     .partitions

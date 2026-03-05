@@ -4,6 +4,7 @@ use std::io::Cursor;
 use crate::apis::{
     self, TagBuffer, decode_compact_string, encode_empty_tag_buffer, read_uvarint, write_uvarint,
 };
+use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 
 #[derive(Debug, Clone)]
@@ -86,8 +87,8 @@ impl Encode for ApiVersionsResponse {
     }
 }
 
-pub fn handle(_request: &ApiVersionsRequest, api_version: i16) -> ApiVersionsResponse {
-    if !(0..=4).contains(&api_version) {
+pub fn handle(_request: &ApiVersionsRequest, ctx: &RequestContext) -> ApiVersionsResponse {
+    if !(0..=4).contains(&ctx.api_version) {
         return ApiVersionsResponse {
             error_code: 35,
             api_keys: vec![],

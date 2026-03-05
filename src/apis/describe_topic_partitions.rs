@@ -5,9 +5,9 @@ use crate::apis::{
     self, TagBuffer, decode_compact_string, encode_bool, encode_compact_string,
     encode_empty_tag_buffer, encode_uuid, read_uvarint, write_uvarint,
 };
-use crate::kraft;
+use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
-use tracing::{error, trace};
+use tracing::trace;
 
 #[derive(Debug, Clone)]
 pub struct Topic {
@@ -164,56 +164,20 @@ impl Encode for DescribeTopicsResponse {
     }
 }
 
-pub fn handle(request: &DescribeTopicsRequest, _api_version: i16) -> DescribeTopicsResponse {
-    use crate::kraft::RecordValue;
-    use std::collections::HashMap;
-
+pub fn handle(request: &DescribeTopicsRequest, ctx: &RequestContext) -> DescribeTopicsResponse {
     let mut topics_out = Vec::new();
-
-    let batches = match kraft::load_metadata_image() {
-        Ok(b) => b,
-        Err(err) => {
-            error!(error = ?err, "failed to load metadata image");
-            return DescribeTopicsResponse {
-                throttle_time_ms: 0,
-                topics: topics_out,
-                next_cursor: -1,
-                tag_buffer: apis::TagBuffer,
-            };
-        }
-    };
-
-    // --- pass 1: collect Topic and Partition records from all batches ---
-    // topic_id -> topic name
-    let mut topic_names: HashMap<[u8; 16], String> = HashMap::new();
-    // topic_id -> list of partitions
-    let mut partitions_by_topic: HashMap<[u8; 16], Vec<kraft::Partition>> = HashMap::new();
-
-    for batch in &batches {
-        for record in &batch.records {
-            match &record.value {
-                RecordValue::Topic(t) => {
-                    topic_names.insert(t.topic_id, t.name.clone());
-                }
-                RecordValue::Partition(p) => {
-                    partitions_by_topic
-                        .entry(p.topic_id)
-                        .or_default()
-                        .push(p.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // sort partitions within each topic
-    for parts in partitions_by_topic.values_mut() {
-        parts.sort_by_key(|p| p.partition_id);
-    }
+    let cluster_metadata = ctx
+        .cluster_metadata
+        .read()
+        .expect("cluster metadata lock poisoned");
 
     // --- pass 2: resolve requested topic names and build response ---
     let requested_names: Vec<String> = if request.topics.is_empty() {
-        let mut names: Vec<String> = topic_names.values().cloned().collect();
+        let mut names: Vec<String> = cluster_metadata
+            .topics
+            .values()
+            .map(|topic_meta| topic_meta.topic.name.clone())
+            .collect();
         names.sort();
         names
     } else {
@@ -223,14 +187,19 @@ pub fn handle(request: &DescribeTopicsRequest, _api_version: i16) -> DescribeTop
 
     for topic_name in requested_names {
         // find the topic_id for this name
-        let maybe_id = topic_names
+        let maybe_id = cluster_metadata
+            .topics
             .iter()
-            .find(|(_, n)| *n == &topic_name)
+            .find(|(_, topic_meta)| topic_meta.topic.name == topic_name)
             .map(|(id, _)| *id);
 
         if let Some(topic_id) = maybe_id {
-            let empty = Vec::new();
-            let parts = partitions_by_topic.get(&topic_id).unwrap_or(&empty);
+            let Some(topic_meta) = cluster_metadata.topics.get(&topic_id) else {
+                continue;
+            };
+
+            let mut parts: Vec<_> = topic_meta.partitions.values().collect();
+            parts.sort_by_key(|partition| partition.partition_id);
 
             let partitions = parts
                 .iter()

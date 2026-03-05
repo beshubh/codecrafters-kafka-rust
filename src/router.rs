@@ -1,4 +1,5 @@
 use crate::apis::{self, ReqBody, ResBody};
+use crate::storage::SharedClusterMetadata;
 use crate::wire::{self, ReqMessage, ResHeader, ResMessage};
 
 #[derive(Debug, Clone)]
@@ -7,15 +8,17 @@ pub struct RequestContext {
     pub api_version: i16,
     pub correlation_id: i32,
     pub body: ReqBody,
+    pub cluster_metadata: SharedClusterMetadata,
 }
 
-impl From<ReqMessage> for RequestContext {
-    fn from(message: ReqMessage) -> Self {
+impl RequestContext {
+    pub fn from_req_message(message: ReqMessage, cluster_metadata: SharedClusterMetadata) -> Self {
         Self {
             api_key: message.header.request_api_key,
             api_version: message.header.request_api_version,
             correlation_id: message.header.correlation_id,
             body: message.body,
+            cluster_metadata,
         }
     }
 }
@@ -23,7 +26,7 @@ impl From<ReqMessage> for RequestContext {
 pub fn handle_request(ctx: RequestContext) -> ResMessage {
     match &ctx.body {
         ReqBody::ApiVersions(request) => {
-            let response = apis::api_versions::handle(request, ctx.api_version);
+            let response = apis::api_versions::handle(request, &ctx);
             let body = ResBody::ApiVersions(response);
             ResMessage {
                 header: ResHeader::v0(ctx.correlation_id),
@@ -31,7 +34,7 @@ pub fn handle_request(ctx: RequestContext) -> ResMessage {
             }
         }
         ReqBody::DescribeTopics(request) => {
-            let response = apis::describe_topic_partitions::handle(&request, ctx.api_version);
+            let response = apis::describe_topic_partitions::handle(request, &ctx);
             let body = ResBody::DescribeTopics(response);
             ResMessage {
                 header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
@@ -39,7 +42,7 @@ pub fn handle_request(ctx: RequestContext) -> ResMessage {
             }
         }
         ReqBody::Fetch(request) => {
-            let response = apis::fetch::handle(&request, ctx.api_version);
+            let response = apis::fetch::handle(request, &ctx);
             let body = ResBody::Fetch(response);
             ResMessage {
                 header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
