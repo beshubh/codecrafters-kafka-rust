@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::kraft::{self, Partition, RecordBatch, RecordValue, Topic};
 use tracing::warn;
+pub mod query_engine;
 
 #[derive(Debug, Clone)]
 pub struct TopicMetadata {

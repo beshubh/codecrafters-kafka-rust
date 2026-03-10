@@ -2,8 +2,8 @@ use bytes::Buf;
 use std::io::Cursor;
 
 use crate::apis::{
-    self, TagBuffer, decode_compact_string, encode_bool, encode_compact_string,
-    encode_empty_tag_buffer, encode_uuid, read_uvarint, write_uvarint,
+    self, decode_compact_string, encode_bool, encode_compact_string, encode_empty_tag_buffer,
+    encode_uuid, read_uvarint, write_uvarint, TagBuffer,
 };
 use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};

@@ -14,7 +14,8 @@ mod router;
 mod storage;
 mod wire;
 
-use router::{RequestContext, handle_request};
+use router::{handle_request, RequestContext};
+use storage::query_engine::QueryEngine;
 use storage::ClusterMetadata;
 use wire::{Decode, ReqMessage};
 
@@ -52,6 +53,9 @@ fn handle_client(
     mut stream: TcpStream,
     cluster_metadata: storage::SharedClusterMetadata,
 ) -> Result<()> {
+    let mut query_engine =
+        QueryEngine::init(cluster_metadata.clone()).context("failed to initialize query engine")?;
+
     loop {
         let mut buf = [0u8; 1024];
         let n = stream
@@ -72,6 +76,7 @@ fn handle_client(
         let response = handle_request(RequestContext::from_req_message(
             request,
             cluster_metadata.clone(),
+            &mut query_engine,
         ));
         let response_bytes = response
             .to_bytes()

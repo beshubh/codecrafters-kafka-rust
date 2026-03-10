@@ -8,8 +8,8 @@ use bytes::{Buf, BufMut};
 use tracing::{debug, trace};
 
 use crate::binary::{
-    DecodeError, TaggedField, TaggedFields, read_compact_array_i32, read_compact_array_uuid,
-    read_compact_string, read_tagged_fields, read_uuid, read_uvarint, read_varint, write_uvarint,
+    read_compact_array_i32, read_compact_array_uuid, read_compact_string, read_tagged_fields,
+    read_uuid, read_uvarint, read_varint, write_uvarint, DecodeError, TaggedField, TaggedFields,
 };
 
 const TOPIC_RECORD_TYPE: i8 = 2;

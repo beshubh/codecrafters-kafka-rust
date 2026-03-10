@@ -3,7 +3,7 @@ use std::io::Cursor;
 use tracing::info;
 
 use crate::binary::{
-    TagBuffer, read_compact_array_len, read_compact_string, read_uuid, write_uvarint,
+    read_compact_array_len, read_compact_string, read_uuid, write_uvarint, TagBuffer,
 };
 use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
@@ -170,7 +170,10 @@ pub struct PartitionFetchResponse {
     last_stable_offset: i64,
     log_start_offset: i64,
     preferred_read_replica: i32,
-    // aborted_transactions and records omitted for now (empty / null)
+    /// Raw RecordBatch bytes read directly from the partition log file.
+    /// None => null COMPACT_NULLABLE_BYTES (varint 0)
+    /// Some(bytes) => varint(len+1) followed by raw bytes
+    records: Option<Vec<u8>>,
 }
 
 impl Encode for PartitionFetchResponse {
@@ -184,8 +187,14 @@ impl Encode for PartitionFetchResponse {
         write_uvarint(out, 1);
         // preferred_read_replica
         out.extend_from_slice(&self.preferred_read_replica.to_be_bytes());
-        // records: null COMPACT_NULLABLE_BYTES => varint 0
-        write_uvarint(out, 0);
+        // records: COMPACT_NULLABLE_BYTES
+        match &self.records {
+            None => write_uvarint(out, 0), // null
+            Some(bytes) => {
+                write_uvarint(out, bytes.len() as u32 + 1);
+                out.extend_from_slice(bytes);
+            }
+        }
         // TAG_BUFFER
         TagBuffer.encode(out);
         Ok(())
@@ -250,30 +259,54 @@ impl Encode for FetchResponse {
     }
 }
 
-pub fn handle(request: &FetchRequest, ctx: &RequestContext) -> FetchResponse {
+pub fn handle(request: &FetchRequest, ctx: &mut RequestContext) -> FetchResponse {
     info!("FetchRequest: {:?}", request);
 
-    let cluster_metadata = ctx
-        .cluster_metadata
-        .read()
-        .expect("cluster metadata lock poisoned");
+    // Resolve topic_id -> topic_name under the read lock, then drop the lock
+    // before borrowing query_engine mutably.
+    let topic_names: Vec<Option<String>> = {
+        let cluster_metadata = ctx
+            .cluster_metadata
+            .read()
+            .expect("cluster metadata lock poisoned");
+        request
+            .topics
+            .iter()
+            .map(|t| {
+                cluster_metadata
+                    .topics
+                    .get(&t.topic_id)
+                    .map(|m| m.topic.name.clone())
+            })
+            .collect()
+    }; // lock dropped here
 
     let responses: Vec<TopicFetchResponse> = request
         .topics
         .iter()
-        .map(|topic| {
-            if cluster_metadata.topics.contains_key(&topic.topic_id) {
-                // Topic exists — return real partition data (stubbed with 0s for now)
+        .zip(topic_names.iter())
+        .map(|(topic, topic_name)| {
+            if let Some(topic_name) = topic_name {
                 let partitions = topic
                     .partitions
                     .iter()
-                    .map(|p| PartitionFetchResponse {
-                        partition_index: p.partition,
-                        error_code: 0,
-                        high_watermark: 0,
-                        last_stable_offset: 0,
-                        log_start_offset: 0,
-                        preferred_read_replica: -1,
+                    .map(|p| {
+                        let records = ctx
+                            .query_engine
+                            .fetch_messages(topic_name, p.partition, p.fetch_offset)
+                            .unwrap_or_else(|err| {
+                                info!(error = ?err, "failed to fetch messages from disk");
+                                None
+                            });
+                        PartitionFetchResponse {
+                            partition_index: p.partition,
+                            error_code: 0,
+                            high_watermark: 0,
+                            last_stable_offset: 0,
+                            log_start_offset: 0,
+                            preferred_read_replica: -1,
+                            records,
+                        }
                     })
                     .collect();
                 TopicFetchResponse {
@@ -292,6 +325,7 @@ pub fn handle(request: &FetchRequest, ctx: &RequestContext) -> FetchResponse {
                         last_stable_offset: -1,
                         log_start_offset: -1,
                         preferred_read_replica: -1,
+                        records: None,
                     })
                     .collect();
                 TopicFetchResponse {

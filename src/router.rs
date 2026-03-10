@@ -1,30 +1,36 @@
 use crate::apis::{self, ReqBody, ResBody};
+use crate::storage::query_engine::QueryEngine;
 use crate::storage::SharedClusterMetadata;
 use crate::wire::{self, ReqMessage, ResHeader, ResMessage};
 
-#[derive(Debug, Clone)]
-pub struct RequestContext {
+pub struct RequestContext<'a> {
     pub api_key: i16,
     pub api_version: i16,
     pub correlation_id: i32,
     pub body: ReqBody,
     pub cluster_metadata: SharedClusterMetadata,
+    pub query_engine: &'a mut QueryEngine,
 }
 
-impl RequestContext {
-    pub fn from_req_message(message: ReqMessage, cluster_metadata: SharedClusterMetadata) -> Self {
+impl<'a> RequestContext<'a> {
+    pub fn from_req_message(
+        message: ReqMessage,
+        cluster_metadata: SharedClusterMetadata,
+        query_engine: &'a mut QueryEngine,
+    ) -> Self {
         Self {
             api_key: message.header.request_api_key,
             api_version: message.header.request_api_version,
             correlation_id: message.header.correlation_id,
             body: message.body,
             cluster_metadata,
+            query_engine,
         }
     }
 }
 
-pub fn handle_request(ctx: RequestContext) -> ResMessage {
-    match &ctx.body {
+pub fn handle_request(mut ctx: RequestContext) -> ResMessage {
+    match &ctx.body.clone() {
         ReqBody::ApiVersions(request) => {
             let response = apis::api_versions::handle(request, &ctx);
             let body = ResBody::ApiVersions(response);
@@ -42,7 +48,7 @@ pub fn handle_request(ctx: RequestContext) -> ResMessage {
             }
         }
         ReqBody::Fetch(request) => {
-            let response = apis::fetch::handle(request, &ctx);
+            let response = apis::fetch::handle(request, &mut ctx);
             let body = ResBody::Fetch(response);
             ResMessage {
                 header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
