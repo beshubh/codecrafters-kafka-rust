@@ -1,9 +1,10 @@
 use anyhow::Result;
+use bytes::Buf;
 use std::io::Cursor;
 
 use crate::binary::{
     TagBuffer, read_compact_array_len, read_compact_nullable_string, read_compact_string, read_i16,
-    read_i32, write_uvarint,
+    read_i32, read_uvarint, write_uvarint,
 };
 use crate::kraft::RecordBatch;
 use crate::router::RequestContext;
@@ -29,11 +30,21 @@ pub struct PartitionProduceReq {
 impl Decode for PartitionProduceReq {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
         let partition_index = read_i32(cur, "produce.partition_index")?;
-        let record_batch_len = read_compact_array_len(cur)?;
-        let mut record_batch = Vec::with_capacity(record_batch_len);
-        for _ in 0..record_batch_len {
-            let recb = RecordBatch::decode(cur)?;
-            record_batch.push(recb);
+        let records_len_plus_one = read_uvarint(cur)?;
+        let mut record_batch = Vec::new();
+        if records_len_plus_one > 0 {
+            let records_len = (records_len_plus_one - 1) as usize;
+            if cur.remaining() < records_len {
+                return Err(crate::truncated!(cur, "produce.records bytes"));
+            }
+
+            let mut records_bytes = vec![0u8; records_len];
+            cur.copy_to_slice(&mut records_bytes);
+
+            let mut records_cur = Cursor::new(records_bytes.as_slice());
+            while (records_cur.position() as usize) < records_bytes.len() {
+                record_batch.push(RecordBatch::decode(&mut records_cur)?);
+            }
         }
         let tag_buffer = TagBuffer::decode(cur)?;
         Ok(PartitionProduceReq {
@@ -210,9 +221,22 @@ impl Encode for ProduceApiResponse {
     }
 }
 
-pub fn handle(_request: &ProduceRequest, ctx: &RequestContext) -> ProduceApiResponse {
+pub fn handle(request: &ProduceRequest, ctx: &RequestContext) -> ProduceApiResponse {
     ProduceApiResponse {
-        responses: vec![],
+        responses: vec![TopicProduceResp {
+            name: request.topics[0].topic_name.clone(),
+            partition_responses: vec![PartitionProduceResp {
+                index: request.topics[0].partitions[0].partition_index,
+                error_code: 3,
+                base_offset: -1,
+                log_append_time_ms: -1,
+                log_start_offset: -1,
+                record_errors: vec![],
+                error_message: "".to_string(),
+                tag_buffer: TagBuffer,
+            }],
+            tag_buffer: TagBuffer,
+        }],
         throttle_time_ms: 0,
         tag_buffer: TagBuffer,
     }

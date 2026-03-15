@@ -81,6 +81,7 @@ impl BodyDecoder for ReqBody {
                 Ok(Self::DescribeTopics(DescribeTopicsRequest::decode(cur)?))
             }
             FETCH => Ok(Self::Fetch(FetchRequest::decode(cur)?)),
+            PRODUCE => Ok(Self::Produce(ProduceRequest::decode(cur)?)),
             _ => Err(crate::unknown_api_key!(cur, api_key)),
         }
     }
