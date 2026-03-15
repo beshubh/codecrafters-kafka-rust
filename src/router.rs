@@ -1,3 +1,5 @@
+use anyhow::Result;
+
 use crate::apis::{self, ReqBody, ResBody};
 use crate::storage::query_engine::QueryEngine;
 use crate::storage::SharedClusterMetadata;
@@ -29,34 +31,31 @@ impl<'a> RequestContext<'a> {
     }
 }
 
-pub fn handle_request(mut ctx: RequestContext) -> ResMessage {
+pub fn handle_request(mut ctx: RequestContext) -> Result<ResMessage> {
     match &ctx.body.clone() {
         ReqBody::ApiVersions(request) => {
             let response = apis::api_versions::handle(request, &ctx);
             let body = ResBody::ApiVersions(response);
-            ResMessage {
+            Ok(ResMessage {
                 header: ResHeader::v0(ctx.correlation_id),
                 body,
-            }
+            })
         }
         ReqBody::DescribeTopics(request) => {
-            let response = apis::describe_topic_partitions::handle(request, &ctx);
+            let response = apis::describe_topic_partitions::handle(request, &ctx)?;
             let body = ResBody::DescribeTopics(response);
-            ResMessage {
+            Ok(ResMessage {
                 header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
                 body,
-            }
+            })
         }
         ReqBody::Fetch(request) => {
-            let response = apis::fetch::handle(request, &mut ctx);
+            let response = apis::fetch::handle(request, &mut ctx)?;
             let body = ResBody::Fetch(response);
-            ResMessage {
+            Ok(ResMessage {
                 header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
                 body,
-            }
-        }
-        _ => {
-            unimplemented!()
+            })
         }
     }
 }

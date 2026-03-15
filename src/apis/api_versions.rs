@@ -1,9 +1,7 @@
 use bytes::Buf;
 use std::io::Cursor;
 
-use crate::apis::{
-    self, decode_compact_string, encode_empty_tag_buffer, read_uvarint, write_uvarint, TagBuffer,
-};
+use crate::apis::{self, decode_compact_string, encode_empty_tag_buffer, write_uvarint, TagBuffer};
 use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 

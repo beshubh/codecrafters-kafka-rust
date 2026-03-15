@@ -42,10 +42,10 @@ impl QueryEngine {
         })
     }
 
-    /// Reads the raw RecordBatch bytes from disk for the given topic/partition
-    /// starting at `fetch_offset`. Returns the full batch bytes (header + body)
-    /// ready to be written verbatim into the Fetch response records field.
-    /// Returns None if no batch with that base_offset is found.
+    /// Reads the raw partition log bytes from the first batch whose base offset is
+    /// at or after `fetch_offset` through EOF. This preserves the exact on-disk
+    /// layout for every batch returned in the Fetch response.
+    /// Returns None if no matching batch is found.
     pub fn fetch_messages(
         &mut self,
         topic_name: &str,
@@ -63,6 +63,7 @@ impl QueryEngine {
 
         let mut header = [0u8; 12]; // base_offset (8) + batch_length (4)
         loop {
+            let batch_start = cursor.stream_position()?;
             match cursor.read_exact(&mut header) {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
@@ -77,19 +78,18 @@ impl QueryEngine {
             }
             let batch_length = batch_length as usize;
 
-            if base_offset == fetch_offset {
-                // read the rest of the batch body
-                let mut body = vec![0u8; batch_length];
-                cursor.read_exact(&mut body)?;
-                // return header + body as one contiguous buffer
-                let mut full = Vec::with_capacity(12 + batch_length);
-                full.extend_from_slice(&header);
-                full.extend_from_slice(&body);
-                return Ok(Some(full));
-            } else {
-                // skip this batch
-                cursor.seek(SeekFrom::Current(batch_length as i64))?;
+            if base_offset >= fetch_offset {
+                cursor.seek(SeekFrom::Start(batch_start))?;
+                let mut records = Vec::new();
+                cursor.read_to_end(&mut records)?;
+                tracing::info!(
+                    "base_offset={base_offset}, batch_length={batch_length}, returning {} bytes",
+                    records.len()
+                );
+                return Ok(Some(records));
             }
+
+            cursor.seek(SeekFrom::Current(batch_length as i64))?;
         }
     }
 }

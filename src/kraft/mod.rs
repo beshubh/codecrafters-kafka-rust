@@ -8,8 +8,9 @@ use bytes::{Buf, BufMut};
 use tracing::{debug, trace};
 
 use crate::binary::{
-    read_compact_array_i32, read_compact_array_uuid, read_compact_string, read_tagged_fields,
-    read_uuid, read_uvarint, read_varint, write_uvarint, DecodeError, TaggedField, TaggedFields,
+    ensure_remaining, read_compact_array_i32, read_compact_array_uuid, read_compact_string,
+    read_i16, read_i32, read_i64, read_i8, read_tagged_fields, read_u8, read_uuid, read_uvarint,
+    read_varint, write_uvarint, DecodeError, TaggedField, TaggedFields,
 };
 
 const TOPIC_RECORD_TYPE: i8 = 2;
@@ -94,36 +95,42 @@ impl Decode for RecordBatch {
     ///   records_count          : i32
     ///   records                : Record[records_count]
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        if cur.remaining() < 12 {
-            return Err(DecodeError::Truncated);
-        }
+        ensure_remaining(cur, 12, "record_batch header")?;
 
-        let base_offset = cur.get_i64();
-        let batch_len = cur.get_i32();
+        let base_offset = read_i64(cur, "record_batch.base_offset")?;
+        let batch_len = read_i32(cur, "record_batch.batch_len")?;
         tracing::info!("base_offset={base_offset}, batch_len={batch_len}");
 
         if batch_len < 0 {
-            return Err(DecodeError::InvalidLength);
+            return Err(crate::invalid_length!(
+                cur,
+                "record_batch.batch_len",
+                batch_len
+            ));
         }
         let batch_len = batch_len as usize;
         if cur.remaining() < batch_len {
-            return Err(DecodeError::Truncated);
+            return Err(crate::truncated!(cur, "record_batch body"));
         }
 
-        let partition_leader_epoch = cur.get_i32();
-        let magic = cur.get_u8();
-        let crc = cur.get_i32();
-        let attributes = cur.get_i16();
-        let last_offset_delta = cur.get_i32();
-        let base_timestamp = cur.get_i64();
-        let max_timestamp = cur.get_i64();
-        let producer_id = cur.get_i64();
-        let producer_epoch = cur.get_i16();
-        let base_sequence = cur.get_i32();
-        let records_count = cur.get_i32();
+        let partition_leader_epoch = read_i32(cur, "record_batch.partition_leader_epoch")?;
+        let magic = read_u8(cur, "record_batch.magic")?;
+        let crc = read_i32(cur, "record_batch.crc")?;
+        let attributes = read_i16(cur, "record_batch.attributes")?;
+        let last_offset_delta = read_i32(cur, "record_batch.last_offset_delta")?;
+        let base_timestamp = read_i64(cur, "record_batch.base_timestamp")?;
+        let max_timestamp = read_i64(cur, "record_batch.max_timestamp")?;
+        let producer_id = read_i64(cur, "record_batch.producer_id")?;
+        let producer_epoch = read_i16(cur, "record_batch.producer_epoch")?;
+        let base_sequence = read_i32(cur, "record_batch.base_sequence")?;
+        let records_count = read_i32(cur, "record_batch.records_count")?;
 
         if records_count < 0 {
-            return Err(DecodeError::InvalidLength);
+            return Err(crate::invalid_length!(
+                cur,
+                "record_batch.records_count",
+                records_count
+            ));
         }
 
         let mut records = Vec::with_capacity(records_count as usize);
@@ -180,13 +187,13 @@ impl Decode for Record {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
         let record_len = read_varint(cur)?;
         if record_len < 0 {
-            return Err(DecodeError::InvalidLength);
+            return Err(crate::invalid_length!(cur, "record.length", record_len));
         }
         if cur.remaining() < record_len as usize {
-            return Err(DecodeError::Truncated);
+            return Err(crate::truncated!(cur, "record body"));
         }
 
-        let attributes = cur.get_i8();
+        let attributes = read_i8(cur, "record.attributes")?;
         let timestamp_delta = read_varint(cur)?;
         let offset_delta = read_varint(cur)?;
 
@@ -197,7 +204,8 @@ impl Decode for Record {
         } else {
             let len = key_len as usize;
             let mut buf = vec![0u8; len];
-            cur.read_exact(&mut buf)?;
+            cur.read_exact(&mut buf)
+                .map_err(|err| crate::io_err!(cur, "record.key", err))?;
             Some(buf)
         };
 
@@ -208,20 +216,21 @@ impl Decode for Record {
         } else {
             let len = val_len as usize;
             let mut buf = vec![0u8; len];
-            cur.read_exact(&mut buf)?;
+            cur.read_exact(&mut buf)
+                .map_err(|err| crate::io_err!(cur, "record.value", err))?;
             Some(buf)
         };
 
         // parse value payload
         let (frame_version, value_type, value) = if let Some(bytes) = value_bytes {
             let mut vc = Cursor::new(bytes.as_slice());
-            let frame_version = vc.get_i8();
-            let type_ = vc.get_i8();
+            let frame_version = read_i8(&mut vc, "record.value.frame_version")?;
+            let type_ = read_i8(&mut vc, "record.value.type")?;
             let record_value = match type_ {
                 FEATURE_LEVEL => {
-                    let version = vc.get_i8();
+                    let version = read_i8(&mut vc, "record.value.feature_level.version")?;
                     let name = read_compact_string(&mut vc)?;
-                    let feature_level = vc.get_i16();
+                    let feature_level = read_i16(&mut vc, "record.value.feature_level.level")?;
                     let tag_buffer = read_tagged_fields(&mut vc)?;
                     RecordValue::FeatureLevel(FeatureLevel {
                         version,
@@ -311,7 +320,7 @@ impl Decode for Topic {
     ///   topic_id   : UUID (16 bytes)
     ///   tag_buffer : tagged fields
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        let version = cur.get_i8();
+        let version = read_i8(cur, "topic.version")?;
         let name = read_compact_string(cur)?;
         let topic_id = read_uuid(cur)?;
         let tag_buffer = read_tagged_fields(cur)?;
@@ -374,16 +383,16 @@ impl Decode for Partition {
     ///   directories       : compact array UUID  (version >= 1 only)
     ///   tag_buffer        : tagged fields
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        let version = cur.get_i8();
-        let partition_id = cur.get_i32();
+        let version = read_i8(cur, "partition.version")?;
+        let partition_id = read_i32(cur, "partition.partition_id")?;
         let topic_id = read_uuid(cur)?;
         let replicas = read_compact_array_i32(cur)?;
         let sync_replicas = read_compact_array_i32(cur)?;
         let removing_replicas = read_compact_array_i32(cur)?;
         let adding_replicas = read_compact_array_i32(cur)?;
-        let leader = cur.get_i32();
-        let leader_epoch = cur.get_i32();
-        let partition_epoch = cur.get_i32();
+        let leader = read_i32(cur, "partition.leader")?;
+        let leader_epoch = read_i32(cur, "partition.leader_epoch")?;
+        let partition_epoch = read_i32(cur, "partition.partition_epoch")?;
         let directories = if version >= 1 {
             read_compact_array_uuid(cur)?
         } else {

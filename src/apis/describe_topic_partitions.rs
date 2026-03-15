@@ -1,10 +1,11 @@
-use bytes::Buf;
+use anyhow::{Context, Result};
 use std::io::Cursor;
 
 use crate::apis::{
     self, decode_compact_string, encode_bool, encode_compact_string, encode_empty_tag_buffer,
-    encode_uuid, read_uvarint, write_uvarint, TagBuffer,
+    encode_uuid, write_uvarint, TagBuffer,
 };
+use crate::binary::{read_u32, read_u8, read_uvarint};
 use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 use tracing::trace;
@@ -36,20 +37,21 @@ pub struct DescribeTopicsRequest {
 
 impl Decode for DescribeTopicsRequest {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        let topics_len_plus1 = read_uvarint(cur).unwrap();
+        let topics_len_plus1 = read_uvarint(cur)?;
         if topics_len_plus1 == 0 {
-            return Err(DecodeError::InvalidLength);
+            return Err(crate::invalid_length!(
+                cur,
+                "describe_topics.topics length",
+                topics_len_plus1
+            ));
         }
         let topics_len = (topics_len_plus1 - 1) as usize;
-        if cur.remaining() < topics_len {
-            return Err(DecodeError::Truncated);
-        }
-        let mut topics = Vec::with_capacity(topics_len as usize);
+        let mut topics = Vec::with_capacity(topics_len);
         for _ in 0..topics_len {
             topics.push(Topic::decode(cur)?);
         }
-        let response_partition_limit = cur.get_u32();
-        let cursor = cur.get_u8(); // TODO: what is the type of cursor?
+        let response_partition_limit = read_u32(cur, "describe_topics.response_partition_limit")?;
+        let cursor = read_u8(cur, "describe_topics.cursor")?;
         let tag_buffer = apis::TagBuffer::decode(cur)?;
         Ok(Self {
             topics,
@@ -164,12 +166,16 @@ impl Encode for DescribeTopicsResponse {
     }
 }
 
-pub fn handle(request: &DescribeTopicsRequest, ctx: &RequestContext) -> DescribeTopicsResponse {
+pub fn handle(
+    request: &DescribeTopicsRequest,
+    ctx: &RequestContext,
+) -> Result<DescribeTopicsResponse> {
     let mut topics_out = Vec::new();
     let cluster_metadata = ctx
         .cluster_metadata
         .read()
-        .expect("cluster metadata lock poisoned");
+        .map_err(|err| anyhow::anyhow!("cluster metadata lock poisoned: {err}"))
+        .context("failed to read cluster metadata for describe topics")?;
 
     // --- pass 2: resolve requested topic names and build response ---
     let requested_names: Vec<String> = if request.topics.is_empty() {
@@ -240,10 +246,10 @@ pub fn handle(request: &DescribeTopicsRequest, ctx: &RequestContext) -> Describe
     }
     topics_out.sort_by_key(|t| t.topic_name.clone());
 
-    DescribeTopicsResponse {
+    Ok(DescribeTopicsResponse {
         throttle_time_ms: 0,
         topics: topics_out,
         next_cursor: -1,
         tag_buffer: apis::TagBuffer,
-    }
+    })
 }

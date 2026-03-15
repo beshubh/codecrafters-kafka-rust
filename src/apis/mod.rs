@@ -2,10 +2,9 @@ pub mod api_versions;
 pub mod describe_topic_partitions;
 pub mod fetch;
 
-use crate::binary::{read_uvarint, read_varint, write_uvarint};
+use crate::binary::{read_compact_string as read_compact_string_impl, write_uvarint};
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 use api_versions::{ApiVersionsRequest, ApiVersionsResponse};
-use bytes::Buf;
 use describe_topic_partitions::{DescribeTopicsRequest, DescribeTopicsResponse};
 use fetch::{FetchRequest, FetchResponse};
 use std::io::Cursor;
@@ -16,21 +15,7 @@ pub fn encode_empty_tag_buffer(out: &mut Vec<u8>) {
 }
 
 pub fn decode_compact_string(cur: &mut Cursor<&[u8]>) -> Result<String, DecodeError> {
-    let len_plus_one = read_uvarint(cur)? as i64;
-
-    // For COMPACT_STRING (non-nullable), 0 is invalid.
-    if len_plus_one == 0 {
-        return Err(DecodeError::InvalidLength);
-    }
-
-    let len = (len_plus_one - 1) as usize;
-    if cur.remaining() < len {
-        return Err(DecodeError::Truncated);
-    }
-
-    let mut buf = vec![0u8; len];
-    cur.copy_to_slice(&mut buf);
-    String::from_utf8(buf).map_err(|_| DecodeError::InvalidUtf8)
+    read_compact_string_impl(cur)
 }
 
 pub fn encode_compact_string(out: &mut Vec<u8>, s: &str) {
@@ -93,7 +78,7 @@ impl BodyDecoder for ReqBody {
                 Ok(Self::DescribeTopics(DescribeTopicsRequest::decode(cur)?))
             }
             FETCH => Ok(Self::Fetch(FetchRequest::decode(cur)?)),
-            _ => Err(DecodeError::UnknownApiKey(api_key)),
+            _ => Err(crate::unknown_api_key!(cur, api_key)),
         }
     }
 }

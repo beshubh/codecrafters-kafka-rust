@@ -1,10 +1,12 @@
 use std::io::Cursor;
 
 use crate::apis::{self, BodyDecoder, BodyEncoder, ReqBody, ResBody};
+use crate::binary::{ensure_remaining, read_i16, read_i32, read_u16, read_u32};
 use bytes::Buf;
 
 // Re-export so all existing import paths keep working.
-pub use crate::binary::{DecodeError, TagBuffer};
+pub use crate::binary::TagBuffer;
+pub use crate::errors::DecodeError;
 
 pub trait Decode: Sized {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError>;
@@ -19,20 +21,18 @@ pub trait Encode {
 #[derive(Debug)]
 pub enum EncodeError {
     UnknownApiKey(i16),
+    Message(String),
 }
 
 fn read_string(cur: &mut Cursor<&[u8]>) -> Result<String, DecodeError> {
-    if cur.remaining() < 2 {
-        return Err(DecodeError::Truncated);
-    }
-    let len = cur.get_u16();
+    let len = read_u16(cur, "string length")?;
     let n = len as usize;
     if cur.remaining() < n {
-        return Err(DecodeError::Truncated);
+        return Err(crate::truncated!(cur, "string bytes"));
     }
     let mut buf = vec![0u8; n];
     cur.copy_to_slice(&mut buf);
-    String::from_utf8(buf).map_err(|_| DecodeError::InvalidUtf8)
+    String::from_utf8(buf).map_err(|_| crate::invalid_utf8!(cur, "string"))
 }
 
 #[derive(Debug, Clone)]
@@ -40,28 +40,25 @@ pub struct HClientId(pub String);
 
 impl Decode for HClientId {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        if cur.remaining() < 2 {
-            return Err(DecodeError::Truncated);
-        }
-
         // Kafka STRING length is INT16; -1 => null
-        let len = cur.get_i16(); // requires Buf::get_i16()
+        let len = read_i16(cur, "client_id length")?;
         if len == -1 {
             return Ok(Self(String::new())); // or return Err / or use Option<String>
         }
         if len < 0 {
-            return Err(DecodeError::InvalidLength);
+            return Err(crate::invalid_length!(cur, "client_id length", len));
         }
 
         let len_usize = len as usize;
         if cur.remaining() < len_usize {
-            return Err(DecodeError::Truncated);
+            return Err(crate::truncated!(cur, "client_id bytes"));
         }
 
         let mut content_bytes = vec![0u8; len_usize];
         cur.copy_to_slice(&mut content_bytes);
 
-        let contents = String::from_utf8(content_bytes).map_err(|_| DecodeError::InvalidUtf8)?;
+        let contents =
+            String::from_utf8(content_bytes).map_err(|_| crate::invalid_utf8!(cur, "client_id"))?;
 
         Ok(Self(contents))
     }
@@ -79,12 +76,10 @@ pub struct ReqHeader {
 impl Decode for ReqHeader {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
         // request_api_key (i16) + request_api_version (i16) + correlation_id (i32) = 8 bytes
-        if cur.remaining() < 8 {
-            return Err(DecodeError::Truncated);
-        }
-        let request_api_key = cur.get_i16();
-        let request_api_version = cur.get_i16();
-        let correlation_id = cur.get_i32();
+        ensure_remaining(cur, 8, "request header")?;
+        let request_api_key = read_i16(cur, "request_api_key")?;
+        let request_api_version = read_i16(cur, "request_api_version")?;
+        let correlation_id = read_i32(cur, "correlation_id")?;
         // These consume bytes from the same cursor, in-order.
         let client_id = HClientId::decode(cur)?;
         let tag_buffer = TagBuffer::decode(cur)?;
@@ -108,9 +103,9 @@ pub struct ReqMessage {
 
 impl Decode for ReqMessage {
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        let message_size = cur.get_u32();
+        let message_size = read_u32(cur, "message_size")?;
         if cur.remaining() < message_size as usize {
-            return Err(DecodeError::Truncated);
+            return Err(crate::truncated!(cur, "message payload"));
         }
         let header = ReqHeader::decode(cur)?;
         let body = ReqBody::decode(cur, header.request_api_key)?;

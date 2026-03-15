@@ -1,5 +1,6 @@
 #![allow(unused_imports)]
 use anyhow::{Context, Result};
+use bytes::Buf;
 use std::{
     io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
@@ -9,6 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 mod apis;
 mod binary;
+mod errors;
 mod kraft;
 mod router;
 mod storage;
@@ -70,14 +72,20 @@ fn handle_client(
         trace!(bytes_read = n, "received request bytes");
 
         let mut cur = Cursor::new(&buf[..n]);
-        let request = ReqMessage::decode(&mut cur)
-            .map_err(|err| anyhow::anyhow!("failed to decode request: {err:?}"))?;
+        let request = ReqMessage::decode(&mut cur).map_err(anyhow::Error::new)?;
+        debug!(
+            bytes_read = n,
+            decoded_bytes = cur.position(),
+            remaining_bytes = cur.remaining(),
+            "decoded request"
+        );
 
         let response = handle_request(RequestContext::from_req_message(
             request,
             cluster_metadata.clone(),
             &mut query_engine,
-        ));
+        ))
+        .context("failed to handle request")?;
         let response_bytes = response
             .to_bytes()
             .map_err(|err| anyhow::anyhow!("failed to encode response: {err:?}"))?;

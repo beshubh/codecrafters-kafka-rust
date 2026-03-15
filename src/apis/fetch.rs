@@ -1,9 +1,11 @@
-use bytes::Buf;
+use anyhow::{Context, Result};
 use std::io::Cursor;
 use tracing::info;
+use tracing_subscriber::field::display::Messages;
 
 use crate::binary::{
-    read_compact_array_len, read_compact_string, read_uuid, write_uvarint, TagBuffer,
+    TagBuffer, read_compact_array_len, read_compact_string, read_i8, read_i32, read_i64, read_uuid,
+    write_uvarint,
 };
 use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
@@ -11,6 +13,14 @@ use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 // ── Error codes ───────────────────────────────────────────────────────────────
 
 const ERROR_UNKNOWN_TOPIC_ID: i16 = 100;
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 // ── Request structs ───────────────────────────────────────────────────────────
 
@@ -74,12 +84,12 @@ impl Decode for FetchRequest {
     //     replica_id => INT32
     //     replica_epoch => INT64
     fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
-        let max_wait_ms = cur.get_i32();
-        let min_bytes = cur.get_i32();
-        let max_bytes = cur.get_i32();
-        let isolation_level = cur.get_i8();
-        let session_id = cur.get_i32();
-        let session_epoch = cur.get_i32();
+        let max_wait_ms = read_i32(cur, "fetch.max_wait_ms")?;
+        let min_bytes = read_i32(cur, "fetch.min_bytes")?;
+        let max_bytes = read_i32(cur, "fetch.max_bytes")?;
+        let isolation_level = read_i8(cur, "fetch.isolation_level")?;
+        let session_id = read_i32(cur, "fetch.session_id")?;
+        let session_epoch = read_i32(cur, "fetch.session_epoch")?;
 
         let num_topics = read_compact_array_len(cur)?;
         let mut topics = Vec::with_capacity(num_topics);
@@ -136,12 +146,12 @@ impl Decode for PartitionFetchRequest {
     // partition current_leader_epoch fetch_offset last_fetched_epoch log_start_offset partition_max_bytes TAG_BUFFER
     fn decode(src: &mut Cursor<&[u8]>) -> Result<Self, DecodeError> {
         let s = Self {
-            partition: src.get_i32(),
-            current_leader_epoch: src.get_i32(),
-            fetch_offset: src.get_i64(),
-            last_fetched_epoch: src.get_i32(),
-            log_start_offset: src.get_i64(),
-            partition_max_bytes: src.get_i32(),
+            partition: read_i32(src, "fetch.partition")?,
+            current_leader_epoch: read_i32(src, "fetch.current_leader_epoch")?,
+            fetch_offset: read_i64(src, "fetch.fetch_offset")?,
+            last_fetched_epoch: read_i32(src, "fetch.last_fetched_epoch")?,
+            log_start_offset: read_i64(src, "fetch.log_start_offset")?,
+            partition_max_bytes: read_i32(src, "fetch.partition_max_bytes")?,
         };
         TagBuffer::decode(src)?;
         Ok(s)
@@ -160,7 +170,7 @@ impl Decode for PartitionFetchRequest {
 ///   log_start_offset       => INT64
 ///   aborted_transactions   => COMPACT_ARRAY (null/empty = varint 0x01 for empty)
 ///   preferred_read_replica => INT32  (-1 = none)
-///   records                => COMPACT_NULLABLE_BYTES (null = 0x00)
+///   records                => COMPACT_RECORDS (nullable compact bytes)
 ///   TAG_BUFFER
 #[derive(Debug, Clone)]
 pub struct PartitionFetchResponse {
@@ -171,8 +181,8 @@ pub struct PartitionFetchResponse {
     log_start_offset: i64,
     preferred_read_replica: i32,
     /// Raw RecordBatch bytes read directly from the partition log file.
-    /// None => null COMPACT_NULLABLE_BYTES (varint 0)
-    /// Some(bytes) => varint(len+1) followed by raw bytes
+    /// None => null COMPACT_RECORDS (varint 0)
+    /// Some(bytes) => varint(len + 1) followed by raw bytes
     records: Option<Vec<u8>>,
 }
 
@@ -183,19 +193,25 @@ impl Encode for PartitionFetchResponse {
         out.extend_from_slice(&self.high_watermark.to_be_bytes());
         out.extend_from_slice(&self.last_stable_offset.to_be_bytes());
         out.extend_from_slice(&self.log_start_offset.to_be_bytes());
-        // aborted_transactions: empty COMPACT_ARRAY => varint 1 (N+1 where N=0)
+
+        // aborted_transactions: empty COMPACT_ARRAY => varint 1
         write_uvarint(out, 1);
-        // preferred_read_replica
+
         out.extend_from_slice(&self.preferred_read_replica.to_be_bytes());
-        // records: COMPACT_NULLABLE_BYTES
+
+        // records: COMPACT_RECORDS
         match &self.records {
-            None => write_uvarint(out, 0), // null
+            None => write_uvarint(out, 0),
             Some(bytes) => {
+                tracing::info!(
+                    records_len = bytes.len(),
+                    records_hex = %hex_bytes(bytes),
+                    "encoding fetch records payload"
+                );
                 write_uvarint(out, bytes.len() as u32 + 1);
                 out.extend_from_slice(bytes);
             }
         }
-        // TAG_BUFFER
         TagBuffer.encode(out);
         Ok(())
     }
@@ -259,16 +275,14 @@ impl Encode for FetchResponse {
     }
 }
 
-pub fn handle(request: &FetchRequest, ctx: &mut RequestContext) -> FetchResponse {
+pub fn handle(request: &FetchRequest, ctx: &mut RequestContext) -> Result<FetchResponse> {
     info!("FetchRequest: {:?}", request);
-
-    // Resolve topic_id -> topic_name under the read lock, then drop the lock
-    // before borrowing query_engine mutably.
     let topic_names: Vec<Option<String>> = {
         let cluster_metadata = ctx
             .cluster_metadata
             .read()
-            .expect("cluster metadata lock poisoned");
+            .map_err(|err| anyhow::anyhow!("cluster metadata lock poisoned: {err}"))
+            .context("failed to read cluster metadata for fetch")?;
         request
             .topics
             .iter()
@@ -280,7 +294,6 @@ pub fn handle(request: &FetchRequest, ctx: &mut RequestContext) -> FetchResponse
             })
             .collect()
     }; // lock dropped here
-
     let responses: Vec<TopicFetchResponse> = request
         .topics
         .iter()
@@ -295,7 +308,13 @@ pub fn handle(request: &FetchRequest, ctx: &mut RequestContext) -> FetchResponse
                             .query_engine
                             .fetch_messages(topic_name, p.partition, p.fetch_offset)
                             .unwrap_or_else(|err| {
-                                info!(error = ?err, "failed to fetch messages from disk");
+                                info!(
+                                    error = ?err,
+                                    topic = %topic_name,
+                                    partition = p.partition,
+                                    fetch_offset = p.fetch_offset,
+                                    "failed to fetch messages from disk"
+                                );
                                 None
                             });
                         PartitionFetchResponse {
@@ -309,6 +328,7 @@ pub fn handle(request: &FetchRequest, ctx: &mut RequestContext) -> FetchResponse
                         }
                     })
                     .collect();
+                // add messages to the topic by reading from the disk
                 TopicFetchResponse {
                     topic_id: topic.topic_id,
                     partitions,
@@ -336,11 +356,11 @@ pub fn handle(request: &FetchRequest, ctx: &mut RequestContext) -> FetchResponse
         })
         .collect();
 
-    FetchResponse {
+    Ok(FetchResponse {
         throttle_time_ms: 0,
         error_code: 0,
         session_id: request.session_id,
         responses,
         tag_buffer: TagBuffer {},
-    }
+    })
 }
