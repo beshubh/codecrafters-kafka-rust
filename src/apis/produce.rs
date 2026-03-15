@@ -222,21 +222,61 @@ impl Encode for ProduceApiResponse {
 }
 
 pub fn handle(request: &ProduceRequest, ctx: &RequestContext) -> ProduceApiResponse {
-    ProduceApiResponse {
-        responses: vec![TopicProduceResp {
-            name: request.topics[0].topic_name.clone(),
-            partition_responses: vec![PartitionProduceResp {
-                index: request.topics[0].partitions[0].partition_index,
-                error_code: 3,
-                base_offset: -1,
-                log_append_time_ms: -1,
-                log_start_offset: -1,
-                record_errors: vec![],
-                error_message: "".to_string(),
+    let cluster_metadata = ctx.cluster_metadata.read().unwrap();
+
+    let responses = request
+        .topics
+        .iter()
+        .map(|topic| {
+            let topic_metadata = cluster_metadata
+                .topics
+                .values()
+                .find(|candidate| candidate.topic.name == topic.topic_name);
+
+            let partition_responses = topic
+                .partitions
+                .iter()
+                .map(|partition| {
+                    let partition_metadata = topic_metadata.and_then(|topic_metadata| {
+                        topic_metadata.partitions.get(&partition.partition_index)
+                    });
+
+                    if partition_metadata.is_some() {
+                        PartitionProduceResp {
+                            index: partition.partition_index,
+                            error_code: 0,
+                            base_offset: 0,
+                            log_append_time_ms: -1,
+                            log_start_offset: 0,
+                            record_errors: vec![],
+                            error_message: String::new(),
+                            tag_buffer: TagBuffer,
+                        }
+                    } else {
+                        PartitionProduceResp {
+                            index: partition.partition_index,
+                            error_code: 3,
+                            base_offset: -1,
+                            log_append_time_ms: -1,
+                            log_start_offset: -1,
+                            record_errors: vec![],
+                            error_message: String::new(),
+                            tag_buffer: TagBuffer,
+                        }
+                    }
+                })
+                .collect();
+
+            TopicProduceResp {
+                name: topic.topic_name.clone(),
+                partition_responses,
                 tag_buffer: TagBuffer,
-            }],
-            tag_buffer: TagBuffer,
-        }],
+            }
+        })
+        .collect();
+
+    ProduceApiResponse {
+        responses,
         throttle_time_ms: 0,
         tag_buffer: TagBuffer,
     }
