@@ -8,22 +8,18 @@ use bytes::{Buf, BufMut};
 use tracing::{debug, trace};
 
 use crate::binary::{
-    ensure_remaining, read_compact_array_i32, read_compact_array_uuid, read_compact_string,
-    read_i16, read_i32, read_i64, read_i8, read_tagged_fields, read_u8, read_uuid, read_uvarint,
-    read_varint, write_uvarint, DecodeError, TaggedField, TaggedFields,
+    DecodeError, TaggedField, TaggedFields, ensure_remaining, read_compact_array_i32,
+    read_compact_array_uuid, read_compact_string, read_i8, read_i16, read_i32, read_i64,
+    read_tagged_fields, read_u8, read_uuid, read_uvarint, read_varint, write_uvarint,
 };
+use crate::wire::Decode;
 
 const TOPIC_RECORD_TYPE: i8 = 2;
 const PARTITION_RECORD_TYPE: i8 = 3;
 const FEATURE_LEVEL: i8 = 12;
 
 // ── Decode / Encode traits ────────────────────────────────────────────────────
-
-trait Decode: Sized {
-    fn decode(cur: &mut Cursor<&[u8]>) -> Result<Self, DecodeError>;
-}
-
-trait Encode {
+pub trait Encode {
     fn encode(&self, buf: &mut Vec<u8>);
 }
 

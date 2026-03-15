@@ -1,7 +1,9 @@
 pub mod api_versions;
 pub mod describe_topic_partitions;
 pub mod fetch;
+pub mod produce;
 
+use crate::apis::produce::{ProduceApiResponse, ProduceRequest};
 use crate::binary::{read_compact_string as read_compact_string_impl, write_uvarint};
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 use api_versions::{ApiVersionsRequest, ApiVersionsResponse};
@@ -49,7 +51,7 @@ pub enum ReqBody {
     DescribeTopics(DescribeTopicsRequest),
     Fetch(FetchRequest),
     // Metadata(MetadataRequest),
-    // Produce(ProduceRequest),
+    Produce(ProduceRequest),
     // Fetch(FetchRequest),
     // ListOffsets(ListOffsetsRequest),
 }
@@ -60,6 +62,7 @@ pub enum ResBody {
     DescribeTopics(DescribeTopicsResponse),
     Fetch(FetchResponse),
     ErrorCode(i16),
+    Produce(ProduceApiResponse),
 }
 
 pub trait BodyDecoder: Sized {
@@ -89,6 +92,7 @@ impl BodyEncoder for ResBody {
             Self::ApiVersions(response) => response.encode(out),
             Self::DescribeTopics(response) => response.encode(out),
             Self::Fetch(response) => response.encode(out),
+            Self::Produce(response) => response.encode(out),
             Self::ErrorCode(error_code) => {
                 out.extend_from_slice(&error_code.to_be_bytes());
                 Ok(())

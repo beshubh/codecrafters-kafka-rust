@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use crate::apis::{self, ReqBody, ResBody};
-use crate::storage::query_engine::QueryEngine;
 use crate::storage::SharedClusterMetadata;
+use crate::storage::query_engine::QueryEngine;
 use crate::wire::{self, ReqMessage, ResHeader, ResMessage};
 
 pub struct RequestContext<'a> {
@@ -52,6 +52,14 @@ pub fn handle_request(mut ctx: RequestContext) -> Result<ResMessage> {
         ReqBody::Fetch(request) => {
             let response = apis::fetch::handle(request, &mut ctx)?;
             let body = ResBody::Fetch(response);
+            Ok(ResMessage {
+                header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
+                body,
+            })
+        }
+        ReqBody::Produce(request) => {
+            let response = apis::produce::handle(request, &ctx);
+            let body = ResBody::Produce(response);
             Ok(ResMessage {
                 header: ResHeader::v1(ctx.correlation_id, wire::TagBuffer),
                 body,

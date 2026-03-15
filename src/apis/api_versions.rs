@@ -1,7 +1,7 @@
 use bytes::Buf;
 use std::io::Cursor;
 
-use crate::apis::{self, decode_compact_string, encode_empty_tag_buffer, write_uvarint, TagBuffer};
+use crate::apis::{self, TagBuffer, decode_compact_string, encode_empty_tag_buffer, write_uvarint};
 use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 
@@ -113,6 +113,12 @@ pub fn handle(_request: &ApiVersionsRequest, ctx: &RequestContext) -> ApiVersion
             api_key: apis::FETCH,
             min_version: 0,
             max_version: 16,
+            tag_buffer: TagBuffer,
+        },
+        ApiKey {
+            api_key: apis::PRODUCE,
+            min_version: 0,
+            max_version: 11,
             tag_buffer: TagBuffer,
         },
     ];
