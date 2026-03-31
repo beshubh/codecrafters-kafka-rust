@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use std::io::Cursor;
 
 use crate::apis::{
-    self, decode_compact_string, encode_bool, encode_compact_string, encode_empty_tag_buffer,
-    encode_uuid, write_uvarint, TagBuffer,
+    self, TagBuffer, decode_compact_string, encode_bool, encode_compact_string,
+    encode_empty_tag_buffer, encode_uuid, write_uvarint,
 };
-use crate::binary::{read_u32, read_u8, read_uvarint};
+use crate::binary::{read_u8, read_u32, read_uvarint};
 use crate::router::RequestContext;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
 use tracing::trace;

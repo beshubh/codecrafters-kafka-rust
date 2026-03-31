@@ -16,9 +16,9 @@ mod router;
 mod storage;
 mod wire;
 
-use router::{handle_request, RequestContext};
-use storage::query_engine::QueryEngine;
+use router::{RequestContext, handle_request};
 use storage::ClusterMetadata;
+use storage::query_engine::QueryEngine;
 use wire::{Decode, ReqMessage};
 
 fn main() -> Result<()> {

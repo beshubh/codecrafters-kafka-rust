@@ -1,14 +1,17 @@
-use anyhow::Result;
-use bytes::Buf;
-use std::io::Cursor;
-
 use crate::binary::{
     TagBuffer, read_compact_array_len, read_compact_nullable_string, read_compact_string, read_i16,
     read_i32, read_uvarint, write_uvarint,
 };
 use crate::kraft::RecordBatch;
 use crate::router::RequestContext;
+use crate::storage::ClusterMetadata;
 use crate::wire::{Decode, DecodeError, Encode, EncodeError};
+use anyhow::Context;
+use anyhow::Result;
+use bytes::Buf;
+use std::fs::{OpenOptions, create_dir_all};
+use std::io::{Cursor, Write};
+use std::path::PathBuf;
 
 fn encode_compact_nullable_string(out: &mut Vec<u8>, value: Option<&str>) {
     match value {
@@ -221,11 +224,11 @@ impl Encode for ProduceApiResponse {
     }
 }
 
-pub fn handle(request: &ProduceRequest, ctx: &RequestContext) -> ProduceApiResponse {
-    let cluster_metadata = ctx.cluster_metadata.read().unwrap();
-
-    let responses = request
-        .topics
+fn prepare_response(
+    req_topics: &Vec<TopicProduceReq>,
+    cluster_metadata: &ClusterMetadata,
+) -> Vec<TopicProduceResp> {
+    let responses = req_topics
         .iter()
         .map(|topic| {
             let topic_metadata = cluster_metadata
@@ -253,6 +256,7 @@ pub fn handle(request: &ProduceRequest, ctx: &RequestContext) -> ProduceApiRespo
                             tag_buffer: TagBuffer,
                         }
                     } else {
+                        // error partition does not exists
                         PartitionProduceResp {
                             index: partition.partition_index,
                             error_code: 3,
@@ -274,7 +278,73 @@ pub fn handle(request: &ProduceRequest, ctx: &RequestContext) -> ProduceApiRespo
             }
         })
         .collect();
+    responses
+}
 
+fn persist_on_disk(request: &ProduceRequest, cluster_metadata: &ClusterMetadata) -> Result<()> {
+    for topic_produce_req in &request.topics {
+        let topic_exists = cluster_metadata
+            .topics
+            .values()
+            .find(|candidate| candidate.topic.name == topic_produce_req.topic_name);
+        if topic_exists.is_none() {
+            tracing::info!("persist on disk, topic does not exists in cluster");
+            continue;
+        }
+        let topic = topic_exists.unwrap();
+        for req_partition in &topic_produce_req.partitions {
+            if let Some(partition) = topic.partitions.get(&req_partition.partition_index) {
+                let partition_dir = PathBuf::from(format!(
+                    "/tmp/kraft-combined-logs/{}-{}",
+                    topic.topic.name, partition.partition_id
+                ));
+                create_dir_all(&partition_dir).with_context(|| {
+                    format!(
+                        "failed to create partition dir: {}",
+                        partition_dir.display()
+                    )
+                })?;
+
+                let partition_path = partition_dir.join("00000000000000000000.log");
+                let mut partition_file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&partition_path)
+                    .with_context(|| {
+                        format!(
+                            "failed to open partition file: {}",
+                            partition_path.display()
+                        )
+                    })?;
+
+                let mut encoded_batches = Vec::new();
+                for batch in &req_partition.record_batch {
+                    batch
+                        .encode(&mut encoded_batches)
+                        .map_err(|err| anyhow::anyhow!("failed to encode record batch: {err:?}"))?;
+                }
+
+                partition_file
+                    .write_all(&encoded_batches)
+                    .with_context(|| {
+                        format!(
+                            "failed to write partition file: {}",
+                            partition_path.display()
+                        )
+                    })?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn handle(request: &ProduceRequest, ctx: &RequestContext) -> ProduceApiResponse {
+    let cluster_metadata = ctx.cluster_metadata.read().unwrap();
+    let responses = prepare_response(&request.topics, &cluster_metadata);
+    if let Err(err) = persist_on_disk(request, &cluster_metadata) {
+        tracing::warn!(error = ?err, "failed to persist produced batches to disk");
+    }
     ProduceApiResponse {
         responses,
         throttle_time_ms: 0,

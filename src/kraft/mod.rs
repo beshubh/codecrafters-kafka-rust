@@ -12,16 +12,12 @@ use crate::binary::{
     read_compact_array_uuid, read_compact_string, read_i8, read_i16, read_i32, read_i64,
     read_tagged_fields, read_u8, read_uuid, read_uvarint, read_varint, write_uvarint,
 };
-use crate::wire::Decode;
+use crate::wire::EncodeError;
+use crate::wire::{Decode, Encode};
 
 const TOPIC_RECORD_TYPE: i8 = 2;
 const PARTITION_RECORD_TYPE: i8 = 3;
 const FEATURE_LEVEL: i8 = 12;
-
-// ── Decode / Encode traits ────────────────────────────────────────────────────
-pub trait Encode {
-    fn encode(&self, buf: &mut Vec<u8>);
-}
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -54,6 +50,51 @@ fn parse_metadata_image(bytes: &[u8]) -> Result<Vec<RecordBatch>, DecodeError> {
         batches.push(RecordBatch::decode(&mut cur)?);
     }
     Ok(batches)
+}
+
+fn write_varint(out: &mut Vec<u8>, value: i32) {
+    let zigzag = ((value << 1) ^ (value >> 31)) as u32;
+    write_uvarint(out, zigzag);
+}
+
+fn write_compact_string(out: &mut Vec<u8>, value: &str) {
+    write_uvarint(out, value.len() as u32 + 1);
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn write_compact_array_i32(out: &mut Vec<u8>, values: &[i32]) {
+    write_uvarint(out, values.len() as u32 + 1);
+    for value in values {
+        out.put_i32(*value);
+    }
+}
+
+fn write_compact_array_uuid(out: &mut Vec<u8>, values: &[[u8; 16]]) {
+    write_uvarint(out, values.len() as u32 + 1);
+    for value in values {
+        out.extend_from_slice(value);
+    }
+}
+
+fn write_tagged_fields(out: &mut Vec<u8>, fields: &[TaggedField]) {
+    write_uvarint(out, fields.len() as u32);
+    for field in fields {
+        write_uvarint(out, field.tag);
+        write_uvarint(out, field.data.len() as u32);
+        out.extend_from_slice(&field.data);
+    }
+}
+
+fn crc32c(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for byte in bytes {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0x82f63b78 & mask);
+        }
+    }
+    !crc
 }
 
 // ── RecordBatch ───────────────────────────────────────────────────────────────
@@ -151,6 +192,39 @@ impl Decode for RecordBatch {
     }
 }
 
+impl Encode for RecordBatch {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let mut records = Vec::new();
+        for record in &self.records {
+            record.encode(&mut records)?;
+        }
+
+        let mut crc_body = Vec::new();
+        crc_body.put_i16(self.attributes);
+        crc_body.put_i32(self.last_offset_delta);
+        crc_body.put_i64(self.base_timestamp);
+        crc_body.put_i64(self.max_timestamp);
+        crc_body.put_i64(self.producer_id);
+        crc_body.put_i16(self.producer_epoch);
+        crc_body.put_i32(self.base_sequence);
+        crc_body.put_i32(self.records.len() as i32);
+        crc_body.extend_from_slice(&records);
+
+        let crc = crc32c(&crc_body) as i32;
+
+        let mut body = Vec::new();
+        body.put_i32(self.partition_leader_epoch);
+        body.put_u8(self.magic);
+        body.put_i32(crc);
+        body.extend_from_slice(&crc_body);
+
+        out.put_i64(self.base_offset);
+        out.put_i32(body.len() as i32);
+        out.extend_from_slice(&body);
+        Ok(())
+    }
+}
+
 // ── Record ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -162,6 +236,7 @@ pub struct Record {
     pub frame_version: i8,
     pub value_type: i8,
     pub value: RecordValue,
+    pub value_bytes: Option<Vec<u8>>,
     pub headers: Vec<Header>,
 }
 
@@ -218,31 +293,44 @@ impl Decode for Record {
         };
 
         // parse value payload
-        let (frame_version, value_type, value) = if let Some(bytes) = value_bytes {
+        let (frame_version, value_type, value) = if let Some(bytes) = &value_bytes {
             let mut vc = Cursor::new(bytes.as_slice());
-            let frame_version = read_i8(&mut vc, "record.value.frame_version")?;
-            let type_ = read_i8(&mut vc, "record.value.type")?;
-            let record_value = match type_ {
-                FEATURE_LEVEL => {
-                    let version = read_i8(&mut vc, "record.value.feature_level.version")?;
-                    let name = read_compact_string(&mut vc)?;
-                    let feature_level = read_i16(&mut vc, "record.value.feature_level.level")?;
-                    let tag_buffer = read_tagged_fields(&mut vc)?;
-                    RecordValue::FeatureLevel(FeatureLevel {
-                        version,
-                        name,
-                        feature_level,
-                        tag_buffer,
-                    })
-                }
-                TOPIC_RECORD_TYPE => RecordValue::Topic(Topic::decode(&mut vc)?),
-                PARTITION_RECORD_TYPE => RecordValue::Partition(Partition::decode(&mut vc)?),
-                _ => RecordValue::Unknown {
-                    frame_version,
-                    type_,
-                },
-            };
-            (frame_version, type_, record_value)
+            if vc.remaining() < 2 {
+                (
+                    0,
+                    0,
+                    RecordValue::Unknown {
+                        frame_version: 0,
+                        type_: 0,
+                        payload: bytes.clone(),
+                    },
+                )
+            } else {
+                let frame_version = read_i8(&mut vc, "record.value.frame_version")?;
+                let type_ = read_i8(&mut vc, "record.value.type")?;
+                let record_value = match type_ {
+                    FEATURE_LEVEL => {
+                        let version = read_i8(&mut vc, "record.value.feature_level.version")?;
+                        let name = read_compact_string(&mut vc)?;
+                        let feature_level = read_i16(&mut vc, "record.value.feature_level.level")?;
+                        let tag_buffer = read_tagged_fields(&mut vc)?;
+                        RecordValue::FeatureLevel(FeatureLevel {
+                            version,
+                            name,
+                            feature_level,
+                            tag_buffer,
+                        })
+                    }
+                    TOPIC_RECORD_TYPE => RecordValue::Topic(Topic::decode(&mut vc)?),
+                    PARTITION_RECORD_TYPE => RecordValue::Partition(Partition::decode(&mut vc)?),
+                    _ => RecordValue::Unknown {
+                        frame_version,
+                        type_,
+                        payload: bytes[(vc.position() as usize)..].to_vec(),
+                    },
+                };
+                (frame_version, type_, record_value)
+            }
         } else {
             (
                 0,
@@ -250,6 +338,7 @@ impl Decode for Record {
                 RecordValue::Unknown {
                     frame_version: 0,
                     type_: 0,
+                    payload: Vec::new(),
                 },
             )
         };
@@ -258,12 +347,19 @@ impl Decode for Record {
         let headers_count = read_uvarint(cur)? as usize;
         let mut headers = Vec::with_capacity(headers_count);
         for _ in 0..headers_count {
-            let _key = read_compact_string(cur)?;
+            let key = read_compact_string(cur)?;
             let val_len = read_varint(cur)?;
-            if val_len > 0 {
-                cur.advance(val_len as usize);
-            }
-            headers.push(Header);
+            let value = if val_len < 0 {
+                None
+            } else {
+                let len = val_len as usize;
+                ensure_remaining(cur, len, "record.header.value")?;
+                let mut buf = vec![0u8; len];
+                cur.read_exact(&mut buf)
+                    .map_err(|err| crate::io_err!(cur, "record.header.value", err))?;
+                Some(buf)
+            };
+            headers.push(Header { key, value });
         }
 
         Ok(Record {
@@ -274,8 +370,77 @@ impl Decode for Record {
             frame_version,
             value_type,
             value,
+            value_bytes,
             headers,
         })
+    }
+}
+
+impl Record {
+    fn encoded_value_bytes(&self) -> Result<Option<Vec<u8>>, EncodeError> {
+        if let Some(bytes) = &self.value_bytes {
+            return Ok(Some(bytes.clone()));
+        }
+
+        match &self.value {
+            RecordValue::Unknown { .. } if self.frame_version == 0 && self.value_type == 0 => {
+                Ok(None)
+            }
+            RecordValue::Unknown {
+                frame_version,
+                type_,
+                payload,
+            } => {
+                let mut buf = Vec::new();
+                buf.put_i8(*frame_version);
+                buf.put_i8(*type_);
+                buf.extend_from_slice(payload);
+                Ok(Some(buf))
+            }
+            value => {
+                let mut buf = Vec::new();
+                buf.put_i8(self.frame_version);
+                buf.put_i8(self.value_type);
+                value.encode(&mut buf)?;
+                Ok(Some(buf))
+            }
+        }
+    }
+}
+
+impl Encode for Record {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let value_bytes = self.encoded_value_bytes()?;
+
+        let mut body = Vec::new();
+        body.put_i8(self.attributes);
+        write_varint(&mut body, self.timestamp_delta);
+        write_varint(&mut body, self.offset_delta);
+
+        match &self.key {
+            Some(key) => {
+                write_varint(&mut body, key.len() as i32);
+                body.extend_from_slice(key);
+            }
+            None => write_varint(&mut body, -1),
+        }
+
+        match &value_bytes {
+            Some(value_bytes) => {
+                write_varint(&mut body, value_bytes.len() as i32);
+                body.extend_from_slice(value_bytes);
+            }
+            None => write_varint(&mut body, -1),
+        }
+
+        write_uvarint(&mut body, self.headers.len() as u32);
+        for header in &self.headers {
+            header.encode(&mut body)?;
+        }
+
+        write_varint(out, body.len() as i32);
+        out.extend_from_slice(&body);
+        Ok(())
     }
 }
 
@@ -286,7 +451,33 @@ pub enum RecordValue {
     FeatureLevel(FeatureLevel),
     Topic(Topic),
     Partition(Partition),
-    Unknown { frame_version: i8, type_: i8 },
+    Unknown {
+        frame_version: i8,
+        type_: i8,
+        payload: Vec<u8>,
+    },
+}
+
+impl Encode for RecordValue {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        match self {
+            RecordValue::FeatureLevel(value) => value.encode(out),
+            RecordValue::Topic(value) => value.encode(out),
+            RecordValue::Partition(value) => value.encode(out),
+            RecordValue::Unknown {
+                frame_version,
+                type_,
+                payload,
+            } => {
+                if *frame_version != 0 || *type_ != 0 {
+                    out.put_i8(*frame_version);
+                    out.put_i8(*type_);
+                }
+                out.extend_from_slice(payload);
+                Ok(())
+            }
+        }
+    }
 }
 
 // ── FeatureLevel ──────────────────────────────────────────────────────────────
@@ -297,6 +488,16 @@ pub struct FeatureLevel {
     pub name: String,
     pub feature_level: i16,
     pub tag_buffer: TaggedFields,
+}
+
+impl Encode for FeatureLevel {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        out.put_i8(self.version);
+        write_compact_string(out, &self.name);
+        out.put_i16(self.feature_level);
+        write_tagged_fields(out, &self.tag_buffer);
+        Ok(())
+    }
 }
 
 // ── Topic ─────────────────────────────────────────────────────────────────────
@@ -335,14 +536,12 @@ impl Encode for Topic {
     ///   name       : compact string
     ///   topic_id   : UUID (16 bytes)
     ///   tag_buffer : uvarint count (fields encoding TBD)
-    fn encode(&self, buf: &mut Vec<u8>) {
+    fn encode(&self, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
         buf.put_i8(self.version);
-        let name_bytes = self.name.as_bytes();
-        write_uvarint(buf, name_bytes.len() as u32 + 1);
-        buf.put_slice(name_bytes);
+        write_compact_string(buf, &self.name);
         buf.put_slice(&self.topic_id);
-        write_uvarint(buf, self.tag_buffer.len() as u32);
-        // individual tagged fields encoding omitted for now
+        write_tagged_fields(buf, &self.tag_buffer);
+        Ok(())
     }
 }
 
@@ -413,7 +612,137 @@ impl Decode for Partition {
     }
 }
 
+impl Encode for Partition {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        out.put_i8(self.version);
+        out.put_i32(self.partition_id);
+        out.extend_from_slice(&self.topic_id);
+        write_compact_array_i32(out, &self.replicas);
+        write_compact_array_i32(out, &self.sync_replicas);
+        write_compact_array_i32(out, &self.removing_replicas);
+        write_compact_array_i32(out, &self.adding_replicas);
+        out.put_i32(self.leader);
+        out.put_i32(self.leader_epoch);
+        out.put_i32(self.partition_epoch);
+        if self.version >= 1 {
+            write_compact_array_uuid(out, &self.directories);
+        }
+        write_tagged_fields(out, &self.tag_buffer);
+        Ok(())
+    }
+}
+
 // ── Header ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub struct Header;
+pub struct Header {
+    pub key: String,
+    pub value: Option<Vec<u8>>,
+}
+
+impl Encode for Header {
+    fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        write_compact_string(out, &self.key);
+        match &self.value {
+            Some(value) => {
+                write_varint(out, value.len() as i32);
+                out.extend_from_slice(value);
+            }
+            None => write_varint(out, -1),
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_batch_round_trips_unknown_record_exactly() {
+        let batch = RecordBatch {
+            base_offset: 42,
+            partition_leader_epoch: 3,
+            magic: 2,
+            crc: 0,
+            attributes: 0,
+            last_offset_delta: 0,
+            base_timestamp: 1234,
+            max_timestamp: 1234,
+            producer_id: -1,
+            producer_epoch: -1,
+            base_sequence: -1,
+            records: vec![Record {
+                attributes: 17,
+                key: Some(vec![1, 2, 3]),
+                timestamp_delta: 7,
+                offset_delta: 0,
+                frame_version: 1,
+                value_type: 99,
+                value: RecordValue::Unknown {
+                    frame_version: 1,
+                    type_: 99,
+                    payload: vec![9, 8, 7, 6],
+                },
+                value_bytes: Some(vec![1, 99, 9, 8, 7, 6]),
+                headers: vec![Header {
+                    key: "trace-id".into(),
+                    value: Some(vec![0xaa, 0xbb]),
+                }],
+            }],
+        };
+
+        let mut encoded = Vec::new();
+        batch.encode(&mut encoded).unwrap();
+
+        let decoded = parse_metadata_image(&encoded).unwrap();
+        let mut reencoded = Vec::new();
+        decoded[0].encode(&mut reencoded).unwrap();
+
+        assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
+    fn record_batch_round_trips_null_value_exactly() {
+        let batch = RecordBatch {
+            base_offset: 7,
+            partition_leader_epoch: 0,
+            magic: 2,
+            crc: 0,
+            attributes: 0,
+            last_offset_delta: 0,
+            base_timestamp: 0,
+            max_timestamp: 0,
+            producer_id: -1,
+            producer_epoch: -1,
+            base_sequence: -1,
+            records: vec![Record {
+                attributes: 0,
+                key: None,
+                timestamp_delta: 0,
+                offset_delta: 0,
+                frame_version: 0,
+                value_type: 0,
+                value: RecordValue::Unknown {
+                    frame_version: 0,
+                    type_: 0,
+                    payload: Vec::new(),
+                },
+                value_bytes: None,
+                headers: vec![Header {
+                    key: "empty".into(),
+                    value: None,
+                }],
+            }],
+        };
+
+        let mut encoded = Vec::new();
+        batch.encode(&mut encoded).unwrap();
+
+        let decoded = parse_metadata_image(&encoded).unwrap();
+        let mut reencoded = Vec::new();
+        decoded[0].encode(&mut reencoded).unwrap();
+
+        assert_eq!(reencoded, encoded);
+    }
+}
